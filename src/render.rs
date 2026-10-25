@@ -3,8 +3,12 @@
 use std::ops::{Add, Mul, Sub};
 
 use bevy::{
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{MaterialPipeline, MaterialPipelineKey},
     prelude::*,
-    render::render_resource::{AsBindGroup, ShaderType},
+    render::render_resource::{
+        AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    },
     shader::ShaderRef,
     sprite_render::{AlphaMode2d, Material2d},
 };
@@ -39,23 +43,99 @@ impl Material2d for CardMaterial {
 }
 
 #[derive(Clone, Copy, Default, Debug, ShaderType)]
-pub struct GridUniform {
-    pub base: Vec4,
-    pub center: Vec4,
-    pub dot: Vec4,
-    pub params: Vec4,
+pub struct BlockUniform {
+    /// neon colour (linear), w: glow intensity
+    pub neon: Vec4,
+    pub body: Vec4,
+    /// half width, half depth, corner radius, height
+    pub dims: Vec4,
+    /// hover, selected, shape index, opened
+    pub p: Vec4,
+    /// line width, grid spacing, dim
+    pub q: Vec4,
 }
 
+/// An extruded element block (see `block.wgsl`).
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
-pub struct GridMaterial {
+pub struct BlockMaterial {
     #[uniform(0)]
-    pub u: GridUniform,
+    pub u: BlockUniform,
 }
 
-impl Material2d for GridMaterial {
+impl Material for BlockMaterial {
     fn fragment_shader() -> ShaderRef {
-        "embedded://rustyc4/grid.wgsl".into()
+        "embedded://rustyc4/block.wgsl".into()
     }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Default, Debug, ShaderType)]
+pub struct PipeUniform {
+    /// neon colour (linear), w: glow intensity
+    pub color: Vec4,
+    /// highlight, dim, pulse spacing (radii), pulse speed (radii per second)
+    pub p: Vec4,
+}
+
+/// A relationship pipe (see `pipe.wgsl`).
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+pub struct PipeMaterial {
+    #[uniform(0)]
+    pub u: PipeUniform,
+}
+
+impl Material for PipeMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://rustyc4/pipe.wgsl".into()
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Default, Debug, ShaderType)]
+pub struct FloorUniform {
+    pub color: Vec4,
+    /// minor spacing, major every n minor, fade distance
+    pub p: Vec4,
+    pub base: Vec4,
+}
+
+/// The neon grid floor (see `floor.wgsl`).
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+pub struct FloorMaterial {
+    #[uniform(0)]
+    pub u: FloorUniform,
+}
+
+impl Material for FloorMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://rustyc4/floor.wgsl".into()
+    }
+}
+
+/// A saturated, bright version of an element's colour for neon edges, in linear space.
+pub fn neon(c: [f32; 3]) -> Vec3 {
+    let hsv: Hsva = Color::srgb(c[0], c[1], c[2]).into();
+    let sat = if hsv.saturation < 0.25 { hsv.saturation * 0.6 } else { (hsv.saturation * 1.25).min(1.0) };
+    let l = Color::from(Hsva::new(hsv.hue, sat, 1.0, 1.0)).to_linear();
+    Vec3::new(l.red, l.green, l.blue)
 }
 
 pub fn lin(c: Color) -> Vec4 {

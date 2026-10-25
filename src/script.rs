@@ -1,7 +1,7 @@
 //! Tiny scripted driver for headless checks and recording demos, enabled with
 //! `RUSTYC4_SCRIPT="1.0 shot a.png; 1.2 focus shop; 2.5 shot b.png; 3 exit"`.
 //! Each step is `<seconds> <action> [arg]`; actions: shot, focus, up, select, relation
-//! (two fqns), hover, grab (fqn dx dy), release (fqn), pan (dx dy), menu, exit.
+//! (two fqns), hover, unhover, pan (dx dy), orbit (dx dy), menu, exit.
 
 use bevy::{
     prelude::*,
@@ -9,7 +9,8 @@ use bevy::{
 };
 
 use crate::camera::Cam;
-use crate::scene::{Diagram, ElemIndex, Elem, Nav, NavQueue};
+use crate::scene::{Diagram, Nav, NavQueue};
+use crate::world::{BlockIndex, Geometry, Heights};
 
 #[derive(Resource)]
 pub struct Script {
@@ -34,13 +35,15 @@ impl Script {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     mut commands: Commands,
     time: Res<Time>,
     script: Option<ResMut<Script>>,
     diagram: Res<Diagram>,
-    index: Res<ElemIndex>,
-    mut elems: Query<&mut Elem>,
+    index: Res<BlockIndex>,
+    geometry: Res<Geometry>,
+    heights: Res<Heights>,
     mut cam: ResMut<Cam>,
     mut queue: ResMut<NavQueue>,
     mut menu: ResMut<crate::ui::Menu>,
@@ -72,27 +75,20 @@ pub fn run(
                 }
             }
             "hover" => {
-                // Move the virtual cursor over an element's card.
-                if let Some(e) = index.0.get(&arg).and_then(|e| elems.get(*e).ok()) {
-                    let (world, _) = cam.project(e.pos.value, e.depth.value);
-                    let s = cam.log_scale.target.exp();
-                    let off = (world - cam.center.target) / s;
-                    cam.fake_cursor = Some(cam.viewport / 2.0 + off * Vec2::new(1.0, -1.0));
-                }
+                // Move the virtual cursor over the middle of an element's top.
+                let at = id.filter(|i| index.0.contains_key(i)).and_then(|i| {
+                    let g = geometry.geos.get(&i)?;
+                    let top = heights.base.get(&i).copied().unwrap_or(0.0) + heights.height.get(&i).copied().unwrap_or(0.0);
+                    cam.world_to_screen(Vec3::new(g.center.x, top, g.center.y))
+                });
+                cam.fake_cursor = at;
             }
-            "grab" => {
-                if let Some(mut e) = words.first().and_then(|f| index.0.get(*f)).and_then(|e| elems.get_mut(*e).ok()) {
-                    e.held = true;
-                    e.grab.target = Vec2::new(num(1), num(2));
-                }
+            "unhover" => cam.fake_cursor = None,
+            "pan" => {
+                let c = cam.viewport / 2.0;
+                cam.drag(c, c + Vec2::new(num(0), num(1)));
             }
-            "release" => {
-                if let Some(mut e) = index.0.get(&arg).and_then(|e| elems.get_mut(*e).ok()) {
-                    e.held = false;
-                    e.grab.target = Vec2::ZERO;
-                }
-            }
-            "pan" => cam.pan_screen(Vec2::new(num(0), num(1))),
+            "orbit" => cam.orbit(Vec2::new(num(0), num(1))),
             "menu" => menu.open = !menu.open,
             "exit" => {
                 exit.write(AppExit::Success);

@@ -12,7 +12,7 @@ struct Card {
     dims: vec4<f32>,
     // opacity, shape index, shadow alpha, stacked alpha
     p: vec4<f32>,
-    // quad padding, shape mix (0 = plain rect, 1 = full shape), unused, unused
+    // quad padding, shape mix (0 = plain rect, 1 = full shape), container (slab top), unused
     q: vec4<f32>,
 }
 
@@ -191,6 +191,26 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // border
     let bd = abs(d + bw * 0.5) - bw * 0.5;
     col = over(col, vec4<f32>(card.border.rgb, card.border.a * coverage(bd, aa)));
+
+    // Containers: the top of a solid slab. A lit lip along the top edge, a fine bevel just
+    // inside the border, and a quiet header strip with a hairline under the title.
+    let slab = card.q.z;
+    if slab > 0.001 {
+        let depth_in = -d;
+        let uvn = p / max(half, vec2<f32>(1.0));
+        let bevel_w = 7.0;
+        let bevel = coverage(abs(depth_in - bevel_w) - 0.4 * bw, aa) * inside;
+        col = over(col, vec4<f32>(1.0, 1.0, 1.0, 0.06 * bevel * slab));
+        let lip = coverage(bd, aa) * smoothstep(0.1, 0.95, uvn.y);
+        col = over(col, vec4<f32>(1.0, 1.0, 1.0, 0.35 * lip * slab));
+        let header_h = 62.0;
+        let in_header = step(half.y - header_h, p.y) * step(bevel_w, depth_in);
+        col = over(col, vec4<f32>(1.0, 1.0, 1.0, 0.025 * in_header * slab));
+        let fade = 1.0 - smoothstep(-0.2, 0.9, uvn.x);
+        let hairline = coverage(abs(p.y - (half.y - header_h)) - 0.5 * bw * 0.6, aa)
+            * step(bevel_w + 14.0, depth_in);
+        col = over(col, vec4<f32>(1.0, 1.0, 1.0, 0.14 * hairline * fade * slab));
+    }
 
     return vec4<f32>(col.rgb, col.a * card.p.x);
 }

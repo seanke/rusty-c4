@@ -6,26 +6,30 @@
 
 mod camera;
 mod detail;
+mod labels;
 mod layout;
 mod model;
 mod parser;
+mod pipes;
 mod render;
 mod scene;
 mod script;
 mod ui;
+mod world;
 
 use std::path::PathBuf;
 
 use bevy::{
     asset::embedded_asset,
+    pbr::MaterialPlugin,
     prelude::*,
     sprite_render::Material2dPlugin,
     window::WindowResolution,
 };
 
-use camera::{Background, Cam};
-use render::{lin, CardMaterial, GridMaterial, GridUniform};
-use scene::{Diagram, ElemIndex, Nav, NavQueue, Pointer, Source, TextRes, BG};
+use camera::Cam;
+use render::{BlockMaterial, CardMaterial, FloorMaterial, PipeMaterial};
+use scene::{Diagram, Nav, NavQueue, Pointer, Source, BG};
 
 fn main() {
     let source = match std::env::args().nth(1).as_deref() {
@@ -52,10 +56,14 @@ fn main() {
         }))
         .add_plugins((
             Material2dPlugin::<CardMaterial>::default(),
-            Material2dPlugin::<GridMaterial>::default(),
+            MaterialPlugin::<BlockMaterial>::default(),
+            MaterialPlugin::<PipeMaterial>::default(),
+            MaterialPlugin::<FloorMaterial>::default(),
         ));
     embedded_asset!(app, "card.wgsl");
-    embedded_asset!(app, "grid.wgsl");
+    embedded_asset!(app, "block.wgsl");
+    embedded_asset!(app, "pipe.wgsl");
+    embedded_asset!(app, "floor.wgsl");
 
     app.insert_resource(Diagram {
         model: Default::default(),
@@ -65,8 +73,10 @@ fn main() {
         error: None,
         focus: None,
         detail: None,
-        layout: Default::default(),
         version: 0,
+        view_version: 0,
+        resets: 0,
+        intro: false,
     })
     .insert_resource(NavQueue(source.map(Nav::Load).into_iter().collect()))
     .init_resource::<ui::Menu>()
@@ -74,11 +84,15 @@ fn main() {
     .init_resource::<ui::PendingDialog>()
     .init_resource::<Cam>()
     .init_resource::<Pointer>()
-    .init_resource::<ElemIndex>()
     .init_resource::<scene::Walk>()
     .init_resource::<ui::UiState>()
-    .insert_resource(TextRes { k: 1.0 })
-    .add_systems(Startup, (setup_camera, scene::setup, ui::spawn).chain())
+    .init_resource::<world::Geometry>()
+    .init_resource::<world::View>()
+    .init_resource::<world::BlockIndex>()
+    .init_resource::<world::Heights>()
+    .init_resource::<pipes::Links>()
+    .init_resource::<pipes::PipeState>()
+    .add_systems(Startup, (scene::setup, ui::spawn).chain())
     .add_systems(
         Update,
         (
@@ -89,12 +103,13 @@ fn main() {
             ui::crumb_clicks,
             scene::watch_files,
             scene::apply_nav,
+            world::sync_view,
+            world::animate,
             detail::update,
             // The camera moves before anything is projected through it this frame.
             camera::apply,
-            scene::text_scale,
-            scene::animate,
-            scene::draw_edges,
+            pipes::update,
+            labels::update,
             ui::update,
             ui::menu_buttons,
             ui::file_drop,
@@ -108,25 +123,4 @@ fn main() {
         app.insert_resource(s);
     }
     app.run();
-}
-
-fn setup_camera(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut grids: ResMut<Assets<GridMaterial>>,
-) {
-    commands.spawn((Camera2d, Msaa::Sample4));
-    commands.spawn((
-        Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
-        MeshMaterial2d(grids.add(GridMaterial {
-            u: GridUniform {
-                base: lin(BG),
-                center: lin(Color::srgb(0.075, 0.087, 0.112)),
-                dot: lin(Color::srgba(0.75, 0.8, 0.95, 0.16)),
-                params: Vec4::new(32.0, 1.1, 0.0, 0.0),
-            },
-        })),
-        Transform::from_xyz(0.0, 0.0, -100.0),
-        Background,
-    ));
 }

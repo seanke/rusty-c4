@@ -123,7 +123,7 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
         WhenLoaded,
         children![(
             Text::new(
-                "scroll / pinch  zoom      drag  pan      click  open      click outside / backspace  back      f  fit      esc  menu"
+                "scroll / pinch  zoom      drag  pan      right-drag  orbit      click  open      click outside / backspace  back      f  fit      esc  menu"
             ),
             font(&fonts, 12.0, FontWeight::MEDIUM),
             TextColor(Color::srgba(0.85, 0.88, 0.95, 0.38)),

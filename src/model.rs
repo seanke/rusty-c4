@@ -121,10 +121,6 @@ impl Model {
         out.reverse();
         out
     }
-
-    pub fn depth(&self, id: Id) -> usize {
-        self.path(Some(id)).len()
-    }
 }
 
 /// LikeC4's named colors, tuned a little darker so white text reads well on top.

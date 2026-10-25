@@ -1,14 +1,14 @@
 # rustyc4
 
-A smooth, zoomable viewer for [LikeC4](https://likec4.dev) architecture models, built with
-[Bevy](https://bevyengine.org).
+A 3D viewer for [LikeC4](https://likec4.dev) architecture models in a Tron style, built
+with [Bevy](https://bevyengine.org).
 
-Click into any element and the camera moves in: its card grows into a frame, its children
-spring out of it, and the level around it is pushed back into the distance, smaller and
-fainter but still there, so you always know where you are and what it connects to. Jumps
-across the hierarchy walk the tree one level at a time. Relationships hang between cards
-like heavy chains: they sway as the camera moves, and you can grab a card or a name tag and give
-it a shake to see what is tied to what.
+Every element is a block extruded from a neon grid floor, and relationships are glowing
+pipes routed between them at right angles; where two pipes have to cross, one bridges over
+the other. Click a block and it rises into a platform while the camera flies in, and its
+children extrude out of its top; everything else stays where it is, so the rest of the
+model is always around you. Pipes leaving a platform run over its edge and down its side.
+Jumps across the hierarchy walk the tree one level at a time.
 
 ## Running
 
@@ -25,13 +25,13 @@ Files are watched and reloaded on save.
 
 | Input                        | Action                                         |
 | ---------------------------- | ---------------------------------------------- |
-| Click a card                 | Open it, or zoom into its details if it has nothing inside |
-| Click a relationship         | Zoom into it: every relation it stands for     |
-| Click outside, Backspace, right-click | Close details, or go up a level |
-| Click a faint element        | Walk over to it                                |
+| Click a block                | Open it, or zoom into its details if it has nothing inside |
+| Click a pipe                 | Zoom into it: every relation it stands for     |
+| Click the floor, Backspace, right-click | Close details, or go up a level |
+| Click a block on another level | Walk over to it                              |
 | Scroll / pinch               | Zoom                                           |
-| Drag empty space, two-finger scroll | Pan                                     |
-| Drag a card or a relationship's tag | Shake it about on its chains; it swings back |
+| Drag, two-finger scroll      | Pan                                            |
+| Right-drag                   | Orbit and tilt the camera                      |
 | F                            | Fit to view                                    |
 | Esc                          | Menu: open another project, reload, quit       |
 

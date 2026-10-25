@@ -27,17 +27,6 @@ pub enum Role {
     External,
     /// The focused element itself, drawn around its children.
     Frame,
-    /// A sibling of the focus or of one of its ancestors, kept around (faintly) so you can
-    /// see where you are. The number is how many levels out it sits.
-    Context(u8),
-    /// An ancestor of the focus, drawn as a faint frame around its level.
-    ContextFrame(u8),
-}
-
-impl Role {
-    pub fn is_frame(self) -> bool {
-        matches!(self, Role::Frame | Role::ContextFrame(_))
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -46,8 +35,6 @@ pub struct Placement {
     /// Where it sits on its own depth layer (before perspective).
     pub rect: Rect,
     pub role: Role,
-    /// Depth layer: 0 for the open level, 1 for the level around it, and so on outward.
-    pub level: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -56,18 +43,12 @@ pub struct EdgeSpec {
     pub to: Id,
     pub label: String,
     pub count: usize,
-    /// Between context elements: drawn faintly, without a label.
-    pub context: bool,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ViewLayout {
     pub nodes: Vec<Placement>,
-    pub edges: Vec<EdgeSpec>,
-    /// What the camera should frame, as seen through the perspective.
     pub bounds: Rect,
-    /// The point deeper layers recede towards: the centre of the open level.
-    pub anchor: Vec2,
 }
 
 impl ViewLayout {
@@ -135,7 +116,6 @@ pub fn compute(model: &Model, focus: Option<Id>, aspect: f32) -> ViewLayout {
                 to: b,
                 label: String::new(),
                 count: 0,
-                context: false,
             }
         });
         e.count += 1;
@@ -361,7 +341,6 @@ impl Placer<'_> {
                 id: self.inner[v],
                 rect: Rect::from_center_size(to_world(along[v], across[v]), CARD),
                 role: Role::Card,
-                level: 0,
             })
             .collect();
 
@@ -375,9 +354,7 @@ impl Placer<'_> {
         let Some(f) = self.focus else {
             return ViewLayout {
                 nodes,
-                edges: self.edges.to_vec(),
                 bounds,
-                anchor: bounds.center(),
             };
         };
         let frame = pad_frame(inner_bounds);
@@ -385,7 +362,6 @@ impl Placer<'_> {
             id: f,
             rect: frame,
             role: Role::Frame,
-            level: 0,
         });
         bounds = frame;
 
@@ -452,220 +428,15 @@ impl Placer<'_> {
                     id: *ext,
                     rect,
                     role: Role::External,
-                    level: 0,
-                });
+                    });
             }
         }
 
         ViewLayout {
             nodes,
-            edges: self.edges.to_vec(),
             bounds,
-            anchor: frame.center(),
         }
     }
-}
-
-/// Extra room between an opened element and the siblings it pushes aside.
-const CONTEXT_GAP: f32 = 60.0;
-
-/// How far behind the open level each outer level sits, in units of camera scale.
-pub const DEPTH: f32 = 1.0;
-
-/// Perspective shrink of a layer `depth` behind the open level, seen from a camera at
-/// orthographic `scale` (the camera's height above the front layer). Zooming in brings the
-/// camera closer, so far layers shrink faster than near ones, as in real 3D.
-pub fn depth_scale(scale: f32, depth: f32) -> f32 {
-    scale / (scale + depth.max(0.0))
-}
-
-/// The camera scale that frames `r` in `avail` (kept in step with `Cam::fit`).
-pub fn fit_scale(r: Rect, avail: Vec2) -> f32 {
-    (r.width() / avail.x).max(r.height() / avail.y).clamp(0.7, 12.0)
-}
-
-/// The focus level laid out in front, with each enclosing level on a layer further back.
-///
-/// Each parent's own layout is "opened up" at the child: everything beyond the child's
-/// card is pushed out just far enough that, once perspective shrinks that layer, it still
-/// frames the level in front instead of hiding behind it. Outside elements the focus talks
-/// to stay where they really live in that larger picture, on their own layer.
-pub fn compose(model: &Model, focus: Option<Id>, avail: Vec2) -> ViewLayout {
-    let aspect = avail.x / avail.y;
-    let Some(f) = focus else {
-        // The top level sits inside a frame of its own, the landscape.
-        let mut view = compute(model, None, aspect);
-        if let (Some(root), false) = (model.root, view.nodes.is_empty()) {
-            let frame = pad_frame(view.bounds);
-            view.nodes.push(Placement {
-                id: root,
-                rect: frame,
-                role: Role::Frame,
-                level: 0,
-            });
-            view.bounds = frame;
-            view.anchor = frame.center();
-        }
-        return view;
-    };
-    let frame = compute(model, focus, aspect)
-        .get(f)
-        .map(|p| p.rect)
-        .unwrap_or_default();
-    // The perspective depends on how far the camera ends up zoomed out, which depends on
-    // what it frames: settle that with one refinement pass.
-    let first = compose_at(model, f, aspect, fit_scale(frame, avail));
-    let s = fit_scale(first.bounds, avail);
-    if s > fit_scale(frame, avail) * 1.08 {
-        compose_at(model, f, aspect, s)
-    } else {
-        first
-    }
-}
-
-fn compose_at(model: &Model, focus: Id, aspect: f32, scale: f32) -> ViewLayout {
-    let mut view = compute(model, Some(focus), aspect);
-    let externals: HashSet<Id> = view
-        .nodes
-        .iter()
-        .filter(|p| p.role == Role::External)
-        .map(|p| p.id)
-        .collect();
-    view.nodes.retain(|p| p.role != Role::External);
-    let frame = view.get(focus).map(|p| p.rect).unwrap_or(view.bounds);
-    let anchor = frame.center();
-    let project = |r: Rect, k: f32| Rect::from_center_size(anchor + (r.center() - anchor) * k, r.size() * k);
-
-    let mut external_rects = Vec::new();
-    // The region already taken by the levels in front, as seen on screen.
-    let mut extent = frame;
-    let mut seen: HashSet<Id> = view.nodes.iter().map(|p| p.id).collect();
-    let mut edge_keys: HashSet<(Id, Id)> = view.edges.iter().map(|e| (e.from, e.to)).collect();
-
-    let mut open = focus;
-    let mut level = 1u8;
-    loop {
-        let parent = model.elements[open].parent;
-        let ctx = compute(model, parent, aspect);
-        let Some(card) = ctx.get(open).map(|p| p.rect) else { break };
-        let k = depth_scale(scale, DEPTH * level as f32);
-        let c = card.center();
-        let h = card.half_size();
-        // Open a hole that, seen at this depth, lines up with what is in front.
-        let grow = ((extent.half_size() + Vec2::splat(CONTEXT_GAP)) / k - h).max(Vec2::ZERO);
-        let to = anchor + (extent.center() - anchor) / k;
-        let stretch = |d: f32, h: f32, g: f32| {
-            if d > h {
-                d + g
-            } else if d < -h {
-                d - g
-            } else {
-                d * (h + g) / h.max(1.0)
-            }
-        };
-        let map = |p: Vec2| {
-            let d = p - c;
-            to + Vec2::new(stretch(d.x, h.x, grow.x), stretch(d.y, h.y, grow.y))
-        };
-
-        let mut level_bounds = extent;
-        let mut parent_frame = None;
-        let ctx_cards: HashSet<Id> = ctx
-            .nodes
-            .iter()
-            .filter(|p| p.role == Role::Card)
-            .map(|p| p.id)
-            .collect();
-        for p in &ctx.nodes {
-            if p.id == open || seen.contains(&p.id) {
-                continue;
-            }
-            match p.role {
-                Role::Card => {
-                    let rect = Rect::from_center_size(map(p.rect.center()), p.rect.size());
-                    let role = if externals.contains(&p.id) {
-                        external_rects.push(project(rect, k));
-                        Role::External
-                    } else {
-                        Role::Context(level)
-                    };
-                    level_bounds = level_bounds.union(project(rect, k));
-                    seen.insert(p.id);
-                    view.nodes.push(Placement {
-                        id: p.id,
-                        rect,
-                        role,
-                        level,
-                    });
-                }
-                Role::Frame => {
-                    let rect = Rect::from_corners(map(p.rect.min), map(p.rect.max));
-                    parent_frame = Some(project(rect, k));
-                    seen.insert(p.id);
-                    view.nodes.push(Placement {
-                        id: p.id,
-                        rect,
-                        role: Role::ContextFrame(level),
-                        level,
-                    });
-                }
-                _ => {}
-            }
-        }
-        for e in &ctx.edges {
-            let local = ctx_cards.contains(&e.from) && ctx_cards.contains(&e.to);
-            if local && e.from != open && e.to != open && edge_keys.insert((e.from, e.to)) {
-                view.edges.push(EdgeSpec {
-                    label: String::new(),
-                    context: true,
-                    ..e.clone()
-                });
-            }
-        }
-
-        // The top level has no element of its own around it: draw the landscape there.
-        if let (None, Some(root)) = (parent, model.root) {
-            let hole = Rect::from_center_size(to, (h + grow) * 2.0);
-            let around = ctx
-                .nodes
-                .iter()
-                .filter(|p| p.role == Role::Card && p.id != open)
-                .map(|p| Rect::from_center_size(map(p.rect.center()), p.rect.size()))
-                .fold(hole, |a, b| a.union(b));
-            view.nodes.push(Placement {
-                id: root,
-                rect: pad_frame(around),
-                role: Role::ContextFrame(level),
-                level,
-            });
-        }
-
-        extent = parent_frame.unwrap_or(level_bounds);
-        match parent {
-            Some(p) => open = p,
-            None => break,
-        }
-        level = level.saturating_add(1);
-    }
-
-    // Frame the focus plus the nearest things it talks to, stopping before the focus would
-    // shrink too far to read. Anything further out is still hinted at by its edges.
-    let limit = frame.size() * 2.0;
-    external_rects.sort_by(|a, b| {
-        let da = a.center().distance(anchor);
-        let db = b.center().distance(anchor);
-        da.total_cmp(&db)
-    });
-    let mut fit = frame;
-    for r in external_rects {
-        let u = fit.union(r);
-        if u.width() <= limit.x && u.height() <= limit.y {
-            fit = u;
-        }
-    }
-    view.bounds = fit;
-    view.anchor = anchor;
-    view
 }
 
 /// A frame around `inner`, with room at the top for its title.
