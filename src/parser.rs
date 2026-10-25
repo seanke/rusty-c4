@@ -735,6 +735,21 @@ fn finish(b: Builder) -> (Model, Vec<String>) {
         }
     }
     model.relations = relations;
+    if !model.roots.is_empty() {
+        let id = model.elements.len();
+        model.elements.push(Element {
+            fqn: String::new(),
+            kind: String::new(),
+            title: "Landscape".into(),
+            description: String::new(),
+            technology: String::new(),
+            parent: None,
+            children: model.roots.clone(),
+            shape: Shape::Rectangle,
+            color: named_color("slate").unwrap(),
+        });
+        model.root = Some(id);
+    }
     (model, warnings)
 }
 

@@ -1,9 +1,11 @@
 //! rustyc4: a smooth, zoomable viewer for LikeC4 architecture models.
 //!
-//! Usage: `rustyc4 [path]` where `path` is a `.c4` / `.likec4` file or a directory of them.
-//! Without a path it opens a built-in example. Files are watched and reloaded on save.
+//! Usage: `rustyc4 [path]` where `path` is a `.c4` / `.likec4` file or a directory of them,
+//! or `rustyc4 --example` for the built-in example. With neither it opens to a welcome
+//! screen. Files are watched and reloaded on save.
 
 mod camera;
+mod detail;
 mod layout;
 mod model;
 mod parser;
@@ -23,41 +25,26 @@ use bevy::{
 
 use camera::{Background, Cam};
 use render::{lin, CardMaterial, GridMaterial, GridUniform};
-use scene::{Diagram, ElemIndex, Nav, NavQueue, Pointer, TextRes, BG};
-
-const DEMO: &str = include_str!("../examples/cloud.c4");
+use scene::{Diagram, ElemIndex, Nav, NavQueue, Pointer, Source, TextRes, BG};
 
 fn main() {
-    let path = std::env::args().nth(1).map(PathBuf::from);
-    let (model, warnings) = match &path {
-        Some(p) => match parser::load(p) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("rustyc4: {e}");
-                std::process::exit(1);
-            }
-        },
-        None => parser::parse_sources(&[("cloud.c4".into(), DEMO.into())]),
-    };
-    for w in &warnings {
-        eprintln!("warning: {w}");
-    }
-    let title = match &path {
-        Some(p) => format!(
-            "rustyc4 · {}",
-            p.canonicalize()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-                .unwrap_or_default()
-        ),
-        None => "rustyc4 · example".to_string(),
+    let source = match std::env::args().nth(1).as_deref() {
+        Some("--example") => Some(Source::Example),
+        Some("-h" | "--help") => {
+            println!("usage: rustyc4 [path | --example]");
+            println!("  path       a .c4 / .likec4 file, or a directory of them");
+            println!("  --example  open the built-in example model");
+            return;
+        }
+        Some(p) => Some(Source::Path(PathBuf::from(p))),
+        None => None,
     };
 
     let mut app = App::new();
     app.insert_resource(ClearColor(BG))
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title,
+                title: "rustyc4".into(),
                 resolution: WindowResolution::new(1440, 900),
                 ..default()
             }),
@@ -71,15 +58,20 @@ fn main() {
     embedded_asset!(app, "grid.wgsl");
 
     app.insert_resource(Diagram {
-        model,
-        warnings,
-        path,
+        model: Default::default(),
+        warnings: Vec::new(),
+        path: None,
+        loaded: false,
+        error: None,
         focus: None,
-        selected: None,
+        detail: None,
         layout: Default::default(),
         version: 0,
     })
-    .insert_resource(NavQueue(vec![Nav::Intro]))
+    .insert_resource(NavQueue(source.map(Nav::Load).into_iter().collect()))
+    .init_resource::<ui::Menu>()
+    .init_resource::<detail::DetailView>()
+    .init_resource::<ui::PendingDialog>()
     .init_resource::<Cam>()
     .init_resource::<Pointer>()
     .init_resource::<ElemIndex>()
@@ -97,11 +89,17 @@ fn main() {
             ui::crumb_clicks,
             scene::watch_files,
             scene::apply_nav,
+            detail::update,
+            // The camera moves before anything is projected through it this frame.
+            camera::apply,
             scene::text_scale,
             scene::animate,
             scene::draw_edges,
-            camera::apply,
             ui::update,
+            ui::menu_buttons,
+            ui::file_drop,
+            ui::dialogs,
+            ui::overlays,
         )
             .chain(),
     )

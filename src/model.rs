@@ -84,6 +84,10 @@ pub struct Model {
     pub relations: Vec<Relation>,
     pub roots: Vec<Id>,
     pub by_fqn: HashMap<String, Id>,
+    /// A hidden element standing for the whole landscape: it holds the top-level elements
+    /// as its children so it can be drawn as their container, but it is nobody's parent and
+    /// never shows up in paths, breadcrumbs or relationships.
+    pub root: Option<Id>,
 }
 
 impl Model {

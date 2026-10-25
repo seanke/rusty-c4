@@ -24,9 +24,12 @@ pub struct Cam {
     /// Logical window size.
     pub viewport: Vec2,
     pub cursor: Option<Vec2>,
-    /// Cursor position injected by the script driver when no real cursor is present.
+    /// Cursor position injected by the script driver; overrides the real one.
     pub fake_cursor: Option<Vec2>,
     pub over_ui: bool,
+    /// Where deeper layers recede towards, relative to the view centre. It travels with the
+    /// camera, so panning gives parallax: far layers slide less than near ones.
+    pub vanish: Spring<Vec2>,
 }
 
 impl Default for Cam {
@@ -39,6 +42,7 @@ impl Default for Cam {
             cursor: None,
             fake_cursor: None,
             over_ui: false,
+            vanish: Spring::new(Vec2::ZERO),
         }
     }
 }
@@ -54,6 +58,14 @@ impl Cam {
 
     pub fn screen_to_world(&self, screen: Vec2) -> Vec2 {
         self.center.value + self.offset(screen) * self.scale()
+    }
+
+    /// A point on a layer `depth` behind the front, as it appears on the front layer, and
+    /// how much that layer is shrunk by perspective.
+    pub fn project(&self, pos: Vec2, depth: f32) -> (Vec2, f32) {
+        let k = crate::layout::depth_scale(self.scale(), depth);
+        let vp = self.center.value + self.vanish.value;
+        (vp + (pos - vp) * k, k)
     }
 
     pub fn cursor_world(&self) -> Option<Vec2> {
@@ -78,9 +90,13 @@ impl Cam {
         self.center.target += d;
     }
 
+    /// The part of the window the diagram is framed in, leaving room for the overlay UI.
+    pub fn avail(&self) -> Vec2 {
+        (self.viewport - Vec2::new(140.0, 190.0)).max(Vec2::splat(100.0))
+    }
+
     pub fn fit(&mut self, r: Rect, snap: bool) {
-        let avail = (self.viewport - Vec2::new(140.0, 190.0)).max(Vec2::splat(100.0));
-        let s = (r.width() / avail.x).max(r.height() / avail.y).clamp(0.7, MAX_SCALE);
+        let s = crate::layout::fit_scale(r, self.avail());
         // Leave a little extra room at the top for the breadcrumb bar.
         let c = r.center() + Vec2::new(0.0, 18.0 * s);
         self.fling = Vec2::ZERO;
@@ -102,7 +118,7 @@ pub fn input(
     keys: Res<ButtonInput<KeyCode>>,
 ) {
     cam.viewport = window.size();
-    cam.cursor = window.cursor_position().or(cam.fake_cursor);
+    cam.cursor = cam.fake_cursor.or(window.cursor_position());
     let anchor = cam.cursor.unwrap_or(cam.viewport / 2.0);
 
     let zoom_mod = keys.any_pressed([
@@ -164,6 +180,7 @@ pub fn apply(
     }
     cam.center.step(dt, 11.0, 1.0);
     cam.log_scale.step(dt, 11.0, 1.0);
+    cam.vanish.step(dt, 9.0, 1.0);
     let s = cam.scale();
 
     let (mut tf, mut proj) = camera.into_inner();
