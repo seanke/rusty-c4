@@ -51,7 +51,7 @@ pub struct BlockUniform {
     pub dims: Vec4,
     /// hover, selected, shape index, opened
     pub p: Vec4,
-    /// line width, grid spacing, dim
+    /// line width, grid spacing, dim, style
     pub q: Vec4,
 }
 
@@ -84,6 +84,8 @@ pub struct PipeUniform {
     pub color: Vec4,
     /// highlight, dim, pulse spacing (radii), pulse speed (radii per second)
     pub p: Vec4,
+    /// style
+    pub q: Vec4,
 }
 
 /// A relationship pipe (see `pipe.wgsl`).
@@ -138,6 +140,8 @@ pub struct DecalUniform {
     pub bg: Vec4,
     /// width / height, pill border alpha
     pub p: Vec4,
+    /// pill border colour
+    pub edge: Vec4,
 }
 
 /// Painted text lying on a surface (see `decal.wgsl`).

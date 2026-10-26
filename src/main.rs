@@ -16,6 +16,7 @@ mod render;
 mod scene;
 mod script;
 mod story;
+mod theme;
 mod ui;
 mod world;
 
@@ -34,17 +35,29 @@ use render::{BlockMaterial, CardMaterial, DecalMaterial, FloorMaterial, PipeMate
 use scene::{Diagram, Nav, NavQueue, Pointer, Source, BG};
 
 fn main() {
-    let source = match std::env::args().nth(1).as_deref() {
-        Some("--example") => Some(Source::Example),
-        Some("-h" | "--help") => {
-            println!("usage: rustyc4 [path | --example]");
-            println!("  path       a .c4 / .likec4 file, or a directory of them");
-            println!("  --example  open the built-in example model");
-            return;
+    let mut source = None;
+    let mut style = theme::Style::Tron;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--example" => source = Some(Source::Example),
+            "--style" => match args.next().as_deref().and_then(theme::Style::parse) {
+                Some(s) => style = s,
+                None => {
+                    eprintln!("rustyc4: --style takes tron, sketch or blocky");
+                    std::process::exit(2);
+                }
+            },
+            "-h" | "--help" => {
+                println!("usage: rustyc4 [path | --example] [--style tron|sketch|blocky]");
+                println!("  path       a .c4 / .likec4 file, or a directory of them");
+                println!("  --example  open the built-in example model");
+                println!("  --style    how it looks (T switches while running)");
+                return;
+            }
+            p => source = Some(Source::Path(PathBuf::from(p))),
         }
-        Some(p) => Some(Source::Path(PathBuf::from(p))),
-        None => None,
-    };
+    }
 
     let mut app = App::new();
     app.insert_resource(ClearColor(BG))
@@ -79,6 +92,7 @@ fn main() {
         version: 0,
         resets: 0,
         intro: false,
+        restyle: false,
     })
     .insert_resource(NavQueue(source.map(Nav::Load).into_iter().collect()))
     .init_resource::<ui::Menu>()
@@ -94,7 +108,8 @@ fn main() {
     .init_resource::<pipes::Links>()
     .init_resource::<pipes::PipeState>()
     .init_resource::<story::Playback>()
-    .add_systems(Startup, (scene::setup, labels::setup, ui::spawn, story::setup, story::spawn_ui).chain())
+    .insert_resource(theme::Theme { style, version: 0 })
+    .add_systems(Startup, (scene::setup, labels::setup, pipes::setup, ui::spawn, story::setup, story::spawn_ui).chain())
     .add_systems(
         Update,
         (
@@ -103,9 +118,11 @@ fn main() {
                 camera::input,
                 scene::pointer,
                 scene::keyboard,
+                theme::keys,
                 story::ui,
                 scene::watch_files,
                 scene::apply_nav,
+                theme::apply,
                 world::auto_open,
                 world::sync_view,
                 // The story overrides hover emphasis while a dynamic view plays.
@@ -123,6 +140,7 @@ fn main() {
                 labels::update,
                 ui::update,
                 ui::menu_buttons,
+                ui::style_buttons,
                 ui::file_drop,
                 ui::dialogs,
                 ui::overlays,

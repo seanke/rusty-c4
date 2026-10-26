@@ -44,6 +44,7 @@ pub struct PendingDialog(Option<Dialog>);
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Resume,
+    Style(crate::theme::Style),
     OpenFolder,
     OpenFile,
     Example,
@@ -95,11 +96,18 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
         },
         WhenLoaded,
         children![(
+            Node {
+                padding: UiRect::axes(px(14), px(5)),
+                border_radius: BorderRadius::all(px(10)),
+                ..default()
+            },
+            // A backing, so the hints read on light styles too.
+            BackgroundColor(Color::srgba(0.02, 0.03, 0.05, 0.55)),
             Text::new(
-                "scroll / pinch  zoom      drag  pan      right-drag  orbit      click  fly to      backspace / right-click  zoom out      f  fit      esc  menu"
+                "scroll / pinch  zoom      drag  pan      right-drag  orbit      click  fly to      backspace / right-click  zoom out      f  fit      t  style      esc  menu"
             ),
             font(&fonts, 12.0, FontWeight::MEDIUM),
-            TextColor(Color::srgba(0.85, 0.88, 0.95, 0.38)),
+            TextColor(Color::srgba(0.85, 0.88, 0.95, 0.6)),
         )],
     ));
 
@@ -187,6 +195,18 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
                     col.spawn(button(&fonts, "Open folder…", Action::OpenFolder, false));
                     col.spawn(button(&fonts, "Open file…", Action::OpenFile, false));
                     col.spawn(button(&fonts, "Reload", Action::Reload, false));
+                    // Style: one button per look, side by side.
+                    col.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: px(6),
+                        margin: UiRect::vertical(px(4)),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for s in crate::theme::Style::ALL {
+                            row.spawn(button(&fonts, s.name(), Action::Style(s), false)).insert(StyleButton(s));
+                        }
+                    });
                     col.spawn(button(&fonts, "Quit", Action::Quit, false));
                 });
             });
@@ -314,11 +334,35 @@ fn link(fonts: &Fonts, label: &str, action: Action) -> impl Bundle {
     )
 }
 
+/// One of the style buttons in the menu.
+#[derive(Component)]
+pub struct StyleButton(crate::theme::Style);
+
+/// Show which style is in use.
+pub fn style_buttons(
+    theme: Res<crate::theme::Theme>,
+    mut buttons: Query<(&StyleButton, &mut Look, &mut BackgroundColor)>,
+    mut last: Local<Option<u64>>,
+    added: Query<(), Added<StyleButton>>,
+) {
+    if *last == Some(theme.version) && added.is_empty() {
+        return;
+    }
+    *last = Some(theme.version);
+    for (b, mut look, mut bg) in &mut buttons {
+        let on = b.0 == theme.style;
+        look.base = if on { BUTTON_PRIMARY } else { BUTTON };
+        look.hover = if on { BUTTON_PRIMARY_HOVER } else { BUTTON_HOVER };
+        bg.0 = look.base;
+    }
+}
+
 pub fn menu_buttons(
     mut buttons: Query<(&Interaction, &Action, &Look, &mut BackgroundColor), Changed<Interaction>>,
     mut menu: ResMut<Menu>,
     mut pending: ResMut<PendingDialog>,
     mut queue: ResMut<NavQueue>,
+    mut theme: ResMut<crate::theme::Theme>,
     mut exit: MessageWriter<AppExit>,
 ) {
     for (interaction, action, look, mut bg) in &mut buttons {
@@ -331,6 +375,7 @@ pub fn menu_buttons(
         }
         match action {
             Action::Resume => menu.open = false,
+            Action::Style(s) => theme.set(*s),
             Action::OpenFolder => pending.0 = Some(Dialog::Folder),
             Action::OpenFile => pending.0 = Some(Dialog::File),
             Action::Example => queue.0.push(Nav::Load(Source::Example)),

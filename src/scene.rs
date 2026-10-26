@@ -44,6 +44,8 @@ pub struct Diagram {
     pub resets: u64,
     /// The next rebuild should play the opening animation.
     pub intro: bool,
+    /// The next rebuild is only a change of style: keep the camera where it is.
+    pub restyle: bool,
 }
 
 /// Something opened up to show everything known about it.

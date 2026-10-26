@@ -17,6 +17,7 @@ use crate::layout::{self, Role};
 use crate::model::{Id, Model, Shape};
 use crate::render::{lin, neon, BlockMaterial, BlockUniform, Spring};
 use crate::scene::{Detail, Diagram};
+use crate::theme::{Style, Theme};
 
 /// Height of a closed block, in layout units (cards are 320 × 180).
 pub const BLOCK_H: f32 = 34.0;
@@ -241,6 +242,15 @@ fn prism(size: Vec2, radius: f32) -> Mesh {
     mesh
 }
 
+/// Rounded corners, except for the blocky style's square ones (a hair of rounding keeps
+/// the side normals clean).
+fn corner_radius(style: Style, scale: f32) -> f32 {
+    match style {
+        Style::Blocky => 0.3 * scale,
+        _ => 16.0 * scale,
+    }
+}
+
 fn target_height(opened: &HashSet<Id>, id: Id, g: &Geo) -> f32 {
     let h = if opened.contains(&id) { BLOCK_H + RISE } else { BLOCK_H };
     h * g.scale
@@ -309,12 +319,14 @@ pub fn sync_view(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<BlockMaterial>>,
     mut cam: ResMut<Cam>,
+    theme: Res<Theme>,
 ) {
     let reset = view.resets != diagram.resets;
     if !reset && view.synced == view.version {
         return;
     }
     let intro = std::mem::take(&mut diagram.intro);
+    let restyle = reset && std::mem::take(&mut diagram.restyle);
     let model = &diagram.model;
     if reset {
         for (e, _) in &blocks {
@@ -327,7 +339,10 @@ pub fn sync_view(
         view.resets = diagram.resets;
         view.version += 1;
         let r = geometry.root_bounds;
-        cam.fit(Vec3::new(r.center().x, 0.0, r.center().y), r.size() + Vec2::splat(120.0), true);
+        // A change of style rebuilds the world in place; only a new model refits the view.
+        if !restyle {
+            cam.fit(Vec3::new(r.center().x, 0.0, r.center().y), r.size() + Vec2::splat(120.0), true);
+        }
     }
     let opened = view.opened.clone();
     let mut visible: HashSet<Id> = model.roots.iter().copied().collect();
@@ -361,7 +376,7 @@ pub fn sync_view(
                 let material = mats.add(BlockMaterial {
                     u: BlockUniform::default(),
                 });
-                let mesh = meshes.add(prism(g.size, 16.0 * g.scale));
+                let mesh = meshes.add(prism(g.size, corner_radius(theme.style, g.scale)));
                 // New blocks extrude out of their surface: all together on first load
                 // (staggered from the middle), or just after their platform starts rising.
                 let delay = if intro {
@@ -428,6 +443,7 @@ pub fn animate(
     mut index: ResMut<BlockIndex>,
     mut blocks: Query<(Entity, &mut Block, &mut Transform)>,
     mut mats: ResMut<Assets<BlockMaterial>>,
+    theme: Res<Theme>,
 ) {
     let dt = time.delta_secs().min(0.05);
     let model = &diagram.model;
@@ -491,19 +507,30 @@ pub fn animate(
             s => s.index(),
         };
         let child_scale = geometry.inner.get(&b.id).map_or(g.scale * 0.2, |i| i.scale);
-        let body = Color::srgb(el.color[0], el.color[1], el.color[2]).mix(&Color::srgb(0.01, 0.015, 0.03), 0.9);
+        let base = Color::srgb(el.color[0], el.color[1], el.color[2]);
+        let (edge, body) = match theme.style {
+            // Neon edges over a near-black body.
+            Style::Tron => (neon(el.color), lin(base.mix(&Color::srgb(0.01, 0.015, 0.03), 0.9))),
+            // Ink in a darker shade of the colour, on pale tinted paper.
+            Style::Sketch => (
+                lin(base.mix(&Color::srgb(0.08, 0.09, 0.15), 0.55)).truncate(),
+                lin(base.mix(&Color::srgb(0.98, 0.97, 0.93), 0.82)),
+            ),
+            // The colour itself, a touch brighter, as the block's material.
+            Style::Blocky => (Vec3::ZERO, lin(base.mix(&Color::WHITE, 0.12))),
+        };
         if let Some(m) = mats.get_mut(&b.material) {
             m.u = BlockUniform {
-                neon: neon(el.color).extend(glow),
-                body: lin(body),
-                dims: Vec4::new(g.size.x * 0.5, g.size.y * 0.5, 16.0 * g.scale, h),
+                neon: edge.extend(glow),
+                body,
+                dims: Vec4::new(g.size.x * 0.5, g.size.y * 0.5, corner_radius(theme.style, g.scale), h),
                 p: Vec4::new(
                     b.hover.value.clamp(0.0, 1.0),
                     if selected == Some(b.id) { 1.0 } else { 0.0 },
                     shape,
                     b.open.value.clamp(0.0, 1.0),
                 ),
-                q: Vec4::new(2.2 * g.scale, 20.0 * child_scale, b.dim.value.clamp(0.0, 1.0), 0.0),
+                q: Vec4::new(2.2 * g.scale, 20.0 * child_scale, b.dim.value.clamp(0.0, 1.0), theme.style.index()),
             };
         }
     }

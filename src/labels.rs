@@ -7,7 +7,8 @@ use bevy::prelude::*;
 use crate::model::{Id, Model};
 use crate::paint::{span, Painter};
 use crate::render::{DecalMaterial, DecalUniform};
-use crate::scene::{Diagram, TEXT};
+use crate::scene::Diagram;
+use crate::theme::{Style, Theme};
 use crate::world::{Block, BlockIndex, Geometry, Heights, View, BLOCK_H};
 
 /// Width of a card's text, in layout units (cards are 320 wide).
@@ -55,11 +56,14 @@ pub fn decal(
     let painted = painter.paint(spans, width, centered)?;
     let size = painted.size;
     let texture = images.add(painted.image);
+    let (_, bg, edge) = painter.style.tag();
+    let corner = if painter.style == Style::Blocky { 0.08 } else { 0.5 };
     let material = mats.add(DecalMaterial {
         u: DecalUniform {
             tint: Vec4::new(1.0, 1.0, 1.0, 0.0),
-            bg: if pill { Vec4::new(0.005, 0.02, 0.035, 0.92) } else { Vec4::ZERO },
-            p: Vec4::new(size.x / size.y, if pill { 0.6 } else { 0.0 }, 0.0, 0.0),
+            bg: if pill { bg } else { Vec4::ZERO },
+            p: Vec4::new(size.x / size.y, if pill { 0.6 } else { 0.0 }, corner, 0.0),
+            edge,
         },
         texture,
     });
@@ -80,9 +84,8 @@ fn spawn(
 ) {
     let el = &model.elements[id];
     let sub = sub_line(model, id);
-    let soft = Color::srgba(0.85, 0.95, 1.0, 0.85);
-    let cyan = Color::srgba(0.55, 0.95, 1.0, 0.9);
-    let mut spans = vec![span(el.title.clone(), 22.0, 700, TEXT)];
+    let (title, cyan, soft) = painter.style.ink();
+    let mut spans = vec![span(el.title.clone(), 22.0, 700, title)];
     if !sub.is_empty() {
         spans.push(span(format!("\n{sub}"), 12.0, 600, cyan));
     }
@@ -94,7 +97,7 @@ fn spawn(
     };
     let header = (!el.children.is_empty())
         .then(|| {
-            let mut spans = vec![span(el.title.clone(), 30.0, 700, TEXT)];
+            let mut spans = vec![span(el.title.clone(), 30.0, 700, title)];
             if !sub.is_empty() {
                 spans.push(span(format!("    {sub}"), 15.0, 600, cyan));
             }
@@ -116,6 +119,7 @@ pub fn update(
     blocks: Query<&Block>,
     (mut painter, mut images, quad): (ResMut<Painter>, ResMut<Assets<Image>>, Res<DecalQuad>),
     mut mats: ResMut<Assets<DecalMaterial>>,
+    theme: Res<Theme>,
     labels: Query<(Entity, &Label)>,
     mut decals: Query<(&mut Transform, &mut Visibility)>,
     mut last_resets: Local<u64>,
@@ -176,7 +180,8 @@ pub fn update(
         };
         let tint = |m: &Handle<DecalMaterial>, alpha: f32, mats: &mut Assets<DecalMaterial>| {
             if let Some(mat) = mats.get_mut(m) {
-                mat.u.tint = Vec4::new(1.25, 1.25, 1.3, alpha);
+                let t = theme.style.text_tint();
+                mat.u.tint = Vec4::new(t, t, t * 1.04, alpha);
             }
         };
         // The card text slides toward the header and fades; the header fades in as it lands.

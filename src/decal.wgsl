@@ -8,8 +8,10 @@ struct Decal {
     tint: vec4<f32>,
     // pill backing colour; a = 0 for none
     bg: vec4<f32>,
-    // width / height of the decal, pill border alpha, unused, unused
+    // width / height of the decal, pill border alpha, corner radius (of the height), unused
     p: vec4<f32>,
+    // pill border colour
+    edge: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> decal: Decal;
@@ -30,11 +32,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let aspect = decal.p.x;
         let p = (in.uv - vec2<f32>(0.5)) * vec2<f32>(aspect, 1.0);
         let half = vec2<f32>(aspect * 0.5, 0.5);
-        let d = sd_box(p, half, 0.5);
+        let d = sd_box(p, half, decal.p.z);
         let aa = max(fwidth(p.y), 1e-5);
         let cov = clamp(0.5 - d / aa, 0.0, 1.0);
         let edge = clamp(0.5 - (abs(d + aa) - aa * 0.6) / aa, 0.0, 1.0) * decal.p.y;
-        let bg = mix(decal.bg.rgb, vec3<f32>(0.2, 0.9, 1.0), edge);
+        let bg = mix(decal.bg.rgb, decal.edge.rgb, edge);
         let bga = max(decal.bg.a * cov, edge);
         rgb = rgb + bg * bga * (1.0 - a);
         a = a + bga * (1.0 - a);

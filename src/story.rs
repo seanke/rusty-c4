@@ -180,20 +180,32 @@ pub fn drive(
     }
 }
 
+/// The pulse's look in each style: a glowing ball, a dot of ink, a block of redstone.
 #[derive(Resource)]
 pub struct PacketAssets {
-    mesh: Handle<Mesh>,
-    material: Handle<StandardMaterial>,
+    mesh: [Handle<Mesh>; 3],
+    material: [Handle<StandardMaterial>; 3],
 }
 
 pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
+    let ball = meshes.add(Sphere::new(1.0).mesh().uv(16, 10));
+    let cube = meshes.add(Cuboid::new(1.4, 1.4, 1.4));
+    let flat = |c: Color| StandardMaterial {
+        base_color: c,
+        unlit: true,
+        ..default()
+    };
     commands.insert_resource(PacketAssets {
-        mesh: meshes.add(Sphere::new(1.0).mesh().uv(16, 10)),
-        material: mats.add(StandardMaterial {
-            base_color: Color::BLACK,
-            emissive: LinearRgba::rgb(14.0, 34.0, 40.0),
-            ..default()
-        }),
+        mesh: [ball.clone(), ball, cube],
+        material: [
+            mats.add(StandardMaterial {
+                base_color: Color::BLACK,
+                emissive: LinearRgba::rgb(14.0, 34.0, 40.0),
+                ..default()
+            }),
+            mats.add(flat(Color::srgb(0.8, 0.16, 0.1))),
+            mats.add(flat(Color::srgb(1.0, 0.2, 0.1))),
+        ],
     });
 }
 
@@ -204,15 +216,25 @@ pub fn draw(
     diagram: Res<Diagram>,
     geometry: Res<Geometry>,
     assets: Res<PacketAssets>,
+    theme: Res<crate::theme::Theme>,
     pipes: Query<&Pipe>,
     mut transforms: Query<(&mut Transform, &mut Visibility)>,
+    mut last_style: Local<Option<u64>>,
 ) {
+    // A new style: start the pulses afresh in its look.
+    if *last_style != Some(theme.version) {
+        *last_style = Some(theme.version);
+        for e in pb.packets.drain(..) {
+            commands.entity(e).despawn();
+        }
+    }
+    let st = theme.style.index() as usize;
     let want = if pb.active.is_some() { pb.current.len() } else { 0 };
     while pb.packets.len() < want {
         let e = commands
             .spawn((
-                Mesh3d(assets.mesh.clone()),
-                MeshMaterial3d(assets.material.clone()),
+                Mesh3d(assets.mesh[st].clone()),
+                MeshMaterial3d(assets.material[st].clone()),
                 Transform::default(),
                 Visibility::Hidden,
             ))

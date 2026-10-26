@@ -1,8 +1,10 @@
 //! Relationships as pipes. Each one is routed once per view, at right angles like a circuit
-//! trace, across the surface its ends stand on: along a platform's top, over its edge and
-//! down its side to the level below, and so on. Routing avoids blocks and prefers not to
-//! cross other pipes; where it has to, the later pipe arches over as a little bridge. The
-//! pipes never move by themselves; they only follow platforms rising and sinking.
+//! trace, between the two blocks that hold its ends on the surface they share: into a
+//! container's side, just as when it was closed. Where an end is inside an open container,
+//! a small port pops up on the platform beside it, with a short pipe plugged in and the name
+//! of the far end painted alongside. Routing avoids blocks and prefers not to cross other
+//! pipes; where it has to, the later pipe arches over as a little bridge. The pipes never
+//! move by themselves; they only follow platforms rising and sinking.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -18,7 +20,8 @@ use crate::model::{Id, Model};
 use crate::labels::{decal, DecalQuad};
 use crate::paint::{span, Painter};
 use crate::render::{neon, DecalMaterial, PipeMaterial, PipeUniform, Spring};
-use crate::scene::{Detail, Diagram, MUTED};
+use crate::scene::{Detail, Diagram};
+use crate::theme::{Style, Theme};
 use crate::world::{Geometry, Heights, View};
 
 /// Pipe radius, in layout units of the level it runs on.
@@ -47,13 +50,35 @@ struct Waypoint {
     p: Vec2,
 }
 
+/// Where a pipe comes up on a platform to plug into the element beside it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Port {
+    at: Waypoint,
+    /// Outward from the element it plugs into.
+    side: Vec2,
+    /// The element at the pipe's far end, and whether the pipe heads there.
+    far: Id,
+    outgoing: bool,
+}
+
+/// A routed link: the outer run between the blocks on their shared surface, plus a short
+/// run from each port into its element, in order from the source to the target.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Route {
+    pieces: Vec<Vec<Waypoint>>,
+    outer: usize,
+    ports: Vec<Port>,
+}
+
 #[derive(Component)]
 pub struct Pipe {
     pub key: (Id, Id),
     pub from: Id,
     pub to: Id,
-    route: Vec<Waypoint>,
+    route: Route,
     bridges: Vec<Waypoint>,
+    /// Each port's model (body and ring) and painted tag.
+    port_parts: Vec<(Entity, Option<(Entity, Handle<DecalMaterial>, Vec2)>)>,
     mesh: Handle<Mesh>,
     material: Handle<PipeMaterial>,
     pub hl: Spring<f32>,
@@ -400,76 +425,105 @@ impl Router<'_> {
         corners(s, &cells)
     }
 
-    /// Route from `a` out to the surface `common`, leaving each platform on the way by the
-    /// side facing `toward`. Returns the waypoints, the cell reached on `common` and the
-    /// heading there.
-    fn climb_out(
-        &mut self,
-        a: Id,
-        toward: Vec2,
-        common: Option<Id>,
-        bridges: &mut Vec<Waypoint>,
-    ) -> (Vec<Waypoint>, (usize, usize), usize) {
+    /// Route out of `a` into the free space beside it, on the surface it stands on, leaving
+    /// by the side facing `toward`. Returns the waypoints, the cell reached and the heading.
+    fn leave(&mut self, a: Id, toward: Vec2) -> (Vec<Waypoint>, (usize, usize), usize) {
         let g = self.geometry.geos[&a];
-        let mut surf = self.model.elements[a].parent;
+        let surf = self.model.elements[a].parent;
         let side = pick_side(g.rect(), toward);
         let wall = self.spot(a, g.rect(), side, toward, surf);
-        let r = PIPE_R * g.scale;
-        let mut out = vec![Waypoint {
-            surface: surf,
-            p: wall - side * r * 1.5,
-        }];
-        let mut cell = self.out_cell(surf, wall + side * 0.01, side);
-        let mut heading = dir_index(side);
-        out.push(Waypoint {
-            surface: surf,
-            p: self.surfs[&surf].center(cell.0, cell.1),
-        });
-        while surf != common {
-            let Some(x) = surf else { break };
-            let parent = self.model.elements[x].parent;
-            let xg = self.geometry.geos[&x];
-            let xside = pick_side(xg.rect(), toward);
-            let edge = self.spot(x, xg.rect(), xside, toward, parent);
-            // Last cell on the platform before its edge.
-            let inner = {
-                let s = &self.surfs[&surf];
-                s.cell_of(edge - xside * s.cell * 0.6)
-            };
-            out.extend(self.path(surf, cell, heading, inner, dir_index(xside), bridges));
-            // Over the edge and straight down the wall, then out to the first free cell.
-            let ps = &self.surfs[&parent];
-            let hug = edge + xside * PIPE_R * self.geometry.surface_scale(parent) * 2.2;
-            let below = ps.cell_of(edge + xside * ps.cell * (CLEAR + 1.6));
-            out.push(Waypoint { surface: surf, p: edge });
-            out.push(Waypoint { surface: surf, p: hug });
-            out.push(Waypoint { surface: parent, p: hug });
-            surf = parent;
-            cell = below;
-            heading = dir_index(xside);
-        }
-        (out, cell, heading)
+        let r = PIPE_R * self.geometry.surface_scale(surf);
+        let cell = self.out_cell(surf, wall + side * 0.01, side);
+        let out = vec![
+            Waypoint {
+                surface: surf,
+                p: wall - side * r * 1.5,
+            },
+            Waypoint {
+                surface: surf,
+                p: self.surfs[&surf].center(cell.0, cell.1),
+            },
+        ];
+        (out, cell, dir_index(side))
     }
 
-    fn route(&mut self, link: &Link) -> (Vec<Waypoint>, Vec<Waypoint>) {
+    /// A port beside `x` on its platform, on the side facing `toward`, and the short run
+    /// from `x` out to it.
+    fn port(&mut self, x: Id, toward: Vec2, far: Id, outgoing: bool) -> (Vec<Waypoint>, Port) {
+        let g = self.geometry.geos[&x];
+        let surf = self.model.elements[x].parent;
+        let side = pick_side(g.rect(), toward);
+        let wall = self.spot(x, g.rect(), side, toward, surf);
+        let s = &self.surfs[&surf];
+        let r = PIPE_R * self.geometry.surface_scale(surf);
+        // A little way out, nearer if something else is in the way.
+        let mut dist = s.cell * (CLEAR + 2.6);
+        while dist > s.cell * 1.2 {
+            let c = s.cell_of(wall + side * dist);
+            if !s.blocked[c.1 * s.nx + c.0] {
+                break;
+            }
+            dist -= s.cell;
+        }
+        let at = Waypoint {
+            surface: surf,
+            p: wall + side * dist,
+        };
+        let piece = vec![
+            Waypoint {
+                surface: surf,
+                p: wall - side * r * 1.5,
+            },
+            at,
+        ];
+        (piece, Port { at, side, far, outgoing })
+    }
+
+    fn route(&mut self, link: &Link) -> (Route, Vec<Waypoint>) {
         let model = self.model;
-        let ga = self.geometry.geos[&link.from];
-        let gb = self.geometry.geos[&link.to];
         let surfaces_a: Vec<Option<Id>> = std::iter::successors(Some(model.elements[link.from].parent), |s| s.map(|x| model.elements[x].parent)).collect();
         let surfaces_b: Vec<Option<Id>> = std::iter::successors(Some(model.elements[link.to].parent), |s| s.map(|x| model.elements[x].parent)).collect();
         let common = surfaces_a.iter().find(|s| surfaces_b.contains(s)).copied().flatten();
+        // The blocks standing on the shared surface that hold each end.
+        let stand = |mut x: Id| {
+            while model.elements[x].parent != common {
+                match model.elements[x].parent {
+                    Some(p) => x = p,
+                    None => break,
+                }
+            }
+            x
+        };
+        let (ea, eb) = (stand(link.from), stand(link.to));
+        let (ga, gb) = (self.geometry.geos[&ea], self.geometry.geos[&eb]);
         let mut bridges = Vec::new();
-        let (mut wa, ca, da) = self.climb_out(link.from, gb.center, common, &mut bridges);
-        let (wb, cb, db) = self.climb_out(link.to, ga.center, common, &mut bridges);
+        let (mut outer, ca, da) = self.leave(ea, gb.center);
+        let (wb, cb, db) = self.leave(eb, ga.center);
         let mid = self.path(common, ca, da, cb, db ^ 1, &mut bridges);
-        wa.extend(mid);
-        wa.extend(wb.into_iter().rev());
-        wa.dedup();
-        (wa, bridges)
+        outer.extend(mid);
+        outer.extend(wb.into_iter().rev());
+        outer.dedup();
+
+        let mut route = Route::default();
+        if ea != link.from {
+            let (piece, port) = self.port(link.from, outer[0].p, link.to, true);
+            route.pieces.push(piece);
+            route.ports.push(port);
+        }
+        let toward_b = outer.last().map_or(gb.center, |w| w.p);
+        route.outer = route.pieces.len();
+        route.pieces.push(outer);
+        if eb != link.to {
+            let (mut piece, port) = self.port(link.to, toward_b, link.from, false);
+            piece.reverse();
+            route.pieces.push(piece);
+            route.ports.push(port);
+        }
+        (route, bridges)
     }
 }
 
-fn route_all(model: &Model, geometry: &Geometry, view: &View, heights_hint: &[Link]) -> Vec<(Vec<Waypoint>, Vec<Waypoint>)> {
+fn route_all(model: &Model, geometry: &Geometry, view: &View, heights_hint: &[Link]) -> Vec<(Route, Vec<Waypoint>)> {
     // A routing grid per surface: the floor, and the top of each opened platform.
     let mut surfs = HashMap::new();
     let mut surfaces: Vec<Option<Id>> = vec![None];
@@ -510,7 +564,7 @@ fn route_all(model: &Model, geometry: &Geometry, view: &View, heights_hint: &[Li
         };
         len(&heights_hint[a]).total_cmp(&len(&heights_hint[b]))
     });
-    let mut out = vec![(Vec::new(), Vec::new()); heights_hint.len()];
+    let mut out = vec![(Route::default(), Vec::new()); heights_hint.len()];
     for i in order {
         out[i] = router.route(&heights_hint[i]);
     }
@@ -599,14 +653,17 @@ fn centre_line(route: &[Waypoint], bridges: &[Waypoint], geometry: &Geometry, he
 }
 
 /// A tube along `line`, with `uv.x` measured in radii along it.
-fn tube(line: &[(Vec3, f32)]) -> Mesh {
+/// Square in section (and flat on top) for the blocky style.
+fn tube(lines: &[Vec<(Vec3, f32)>], square: bool) -> Mesh {
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-    let sides = 10;
-    let mut pos = Vec::new();
-    let mut nrm = Vec::new();
-    let mut uv = Vec::new();
+    let sides = if square { 4 } else { 10 };
+    let turn = if square { std::f32::consts::FRAC_PI_4 } else { 0.0 };
+    let mut pos: Vec<[f32; 3]> = Vec::new();
+    let mut nrm: Vec<[f32; 3]> = Vec::new();
+    let mut uv: Vec<[f32; 2]> = Vec::new();
     let mut idx: Vec<u32> = Vec::new();
-    if line.len() >= 2 {
+    for line in lines.iter().filter(|l| l.len() >= 2) {
+        let base = pos.len() as u32;
         let mut normal = Vec3::ZERO;
         let mut along = 0.0;
         for i in 0..line.len() {
@@ -623,22 +680,30 @@ fn tube(line: &[(Vec3, f32)]) -> Mesh {
             }
             let binormal = t.cross(normal);
             for k in 0..=sides {
-                let ang = k as f32 / sides as f32 * std::f32::consts::TAU;
+                let ang = k as f32 / sides as f32 * std::f32::consts::TAU + turn;
                 let o = normal * ang.cos() + binormal * ang.sin();
-                pos.push((p + o * r).to_array());
-                nrm.push(o.to_array());
+                pos.push((p + o * r * if square { std::f32::consts::SQRT_2 } else { 1.0 }).to_array());
+                // Flat faces for the square tube: the normal of the face this corner leads.
+                let fo = if square {
+                    let fa = ang + std::f32::consts::PI / sides as f32;
+                    normal * fa.cos() + binormal * fa.sin()
+                } else {
+                    o
+                };
+                nrm.push(fo.to_array());
                 uv.push([along, k as f32 / sides as f32]);
             }
         }
         let ring = sides as u32 + 1;
         for i in 0..line.len() as u32 - 1 {
             for k in 0..sides as u32 {
-                let a = i * ring + k;
+                let a = base + i * ring + k;
                 let b = a + ring;
                 idx.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
             }
         }
-    } else {
+    }
+    if pos.is_empty() {
         pos = vec![[0.0; 3]; 3];
         nrm = vec![[0.0, 1.0, 0.0]; 3];
         uv = vec![[0.0; 2]; 3];
@@ -649,6 +714,51 @@ fn tube(line: &[(Vec3, f32)]) -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     mesh.insert_indices(Indices::U32(idx));
     mesh
+}
+
+/// Port models: a jack with a glowing ring, or (blocky) a little block with a red cap.
+/// Materials are per style, in `Style` order.
+#[derive(Resource)]
+pub struct PortAssets {
+    body: Handle<Mesh>,
+    ring: Handle<Mesh>,
+    cube: Handle<Mesh>,
+    cap: Handle<Mesh>,
+    body_mat: [Handle<StandardMaterial>; 3],
+    ring_mat: [Handle<StandardMaterial>; 3],
+}
+
+pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
+    let flat = |c: Color| StandardMaterial {
+        base_color: c,
+        unlit: true,
+        ..default()
+    };
+    commands.insert_resource(PortAssets {
+        body: meshes.add(Cylinder::new(1.0, 1.0).mesh().resolution(20)),
+        ring: meshes.add(Torus::new(0.62, 0.92).mesh().major_resolution(24).minor_resolution(8)),
+        cube: meshes.add(Cuboid::new(1.6, 1.0, 1.6)),
+        cap: meshes.add(Cuboid::new(0.7, 0.5, 0.7)),
+        body_mat: [
+            mats.add(StandardMaterial {
+                base_color: Color::srgb(0.02, 0.04, 0.06),
+                emissive: LinearRgba::rgb(0.05, 0.35, 0.5),
+                perceptual_roughness: 0.4,
+                ..default()
+            }),
+            mats.add(flat(Color::srgb(0.97, 0.95, 0.9))),
+            mats.add(flat(Color::srgb(0.5, 0.5, 0.5))),
+        ],
+        ring_mat: [
+            mats.add(StandardMaterial {
+                base_color: Color::BLACK,
+                emissive: LinearRgba::rgb(1.2, 7.0, 9.0),
+                ..default()
+            }),
+            mats.add(flat(Color::srgb(0.1, 0.11, 0.18))),
+            mats.add(flat(Color::srgb(0.95, 0.12, 0.06))),
+        ],
+    });
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -668,8 +778,8 @@ pub fn update(
     view: Res<View>,
     geometry: Res<Geometry>,
     heights: Res<Heights>,
-    playback: Res<crate::story::Playback>,
-    (mut painter, mut images, quad): (ResMut<Painter>, ResMut<Assets<Image>>, Res<DecalQuad>),
+    (playback, theme): (Res<crate::story::Playback>, Res<Theme>),
+    (mut painter, mut images, quad, port_assets): (ResMut<Painter>, ResMut<Assets<Image>>, Res<DecalQuad>, Res<PortAssets>),
     mut state: ResMut<PipeState>,
     mut current: ResMut<Links>,
     mut pipes: Query<(Entity, &mut Pipe)>,
@@ -686,10 +796,19 @@ pub fn update(
             if let Some((t, _, _)) = &p.label {
                 commands.entity(*t).despawn();
             }
+            for (body, tag) in &p.port_parts {
+                commands.entity(*body).despawn();
+                if let Some((t, _, _)) = tag {
+                    commands.entity(*t).despawn();
+                }
+            }
             commands.entity(e).despawn();
         }
         state.resets = view.resets;
         state.version = u64::MAX;
+        // The old pipes are still in the query until the despawns apply: route afresh next
+        // frame rather than touching them again.
+        return;
     }
     if state.version != view.version || state.story != playback.version {
         state.version = view.version;
@@ -721,7 +840,45 @@ pub fn update(
             let material = mats.add(PipeMaterial {
                 u: PipeUniform::default(),
             });
-            let mesh = meshes.add(tube(&[]));
+            let mesh = meshes.add(tube(&[], false));
+            // Ports: a little jack on the platform and the far end's name beside it.
+            let port_parts = routes[i]
+                .0
+                .ports
+                .iter()
+                .map(|port| {
+                    let st = theme.style.index() as usize;
+                    let (body_mesh, cap_mesh) = if theme.style == Style::Blocky {
+                        (port_assets.cube.clone(), port_assets.cap.clone())
+                    } else {
+                        (port_assets.body.clone(), port_assets.ring.clone())
+                    };
+                    let body = commands
+                        .spawn((Transform::default(), Visibility::Hidden))
+                        .with_children(|c| {
+                            c.spawn((
+                                Mesh3d(body_mesh),
+                                MeshMaterial3d(port_assets.body_mat[st].clone()),
+                                Transform::from_xyz(0.0, 0.5, 0.0),
+                            ));
+                            c.spawn((
+                                Mesh3d(cap_mesh),
+                                MeshMaterial3d(port_assets.ring_mat[st].clone()),
+                                Transform::from_xyz(0.0, 1.0, 0.0),
+                            ));
+                        })
+                        .id();
+                    // The painted font has no arrows, so say it in words.
+                    let dir = if port.outgoing { "to" } else { "from" };
+                    let ink = painter.style.tag().0;
+                    let spans = [
+                        span(format!("  {dir}  "), 9.5, 400, ink.with_alpha(0.7)),
+                        span(format!("{}  ", model.elements[port.far].title), 11.0, 600, ink),
+                    ];
+                    let tag = decal(&mut commands, &mut painter, &mut images, &mut decal_mats, &quad, &spans, 600.0, false, true);
+                    (body, tag)
+                })
+                .collect();
             let mut grow = Spring::new(0.0);
             grow.target = 1.0;
             let label = (!l.label.is_empty() || l.count > 1)
@@ -731,7 +888,7 @@ pub fn update(
                         (false, 1) => truncate(&l.label, 40),
                         (false, n) => format!("{}  +{}", truncate(&l.label, 34), n - 1),
                     };
-                    let spans = [span(format!(" {text} "), 12.5, 500, MUTED.with_alpha(1.0))];
+                    let spans = [span(format!(" {text} "), 12.5, 500, painter.style.tag().0)];
                     decal(&mut commands, &mut painter, &mut images, &mut decal_mats, &quad, &spans, 600.0, false, true)
                 })
                 .flatten();
@@ -745,6 +902,7 @@ pub fn update(
                     to: l.to,
                     route: routes[i].0.clone(),
                     bridges: routes[i].1.clone(),
+                    port_parts,
                     mesh,
                     material,
                     hl: Spring::new(0.0),
@@ -784,15 +942,26 @@ pub fn update(
             if let Some((t, _, _)) = &p.label {
                 commands.entity(*t).despawn();
             }
+            for (body, tag) in &p.port_parts {
+                commands.entity(*body).despawn();
+                if let Some((t, _, _)) = tag {
+                    commands.entity(*t).despawn();
+                }
+            }
             commands.entity(e).despawn();
             continue;
         }
         if heights.moving || (grow - p.built).abs() > 1e-4 {
-            let line = centre_line(&p.route, &p.bridges, &geometry, &heights, grow);
+            let lines: Vec<Vec<(Vec3, f32)>> = p
+                .route
+                .pieces
+                .iter()
+                .map(|piece| centre_line(piece, &p.bridges, &geometry, &heights, grow))
+                .collect();
             if let Some(m) = meshes.get_mut(&p.mesh) {
-                *m = tube(&line);
+                *m = tube(&lines, theme.style == Style::Blocky);
             }
-            p.samples = line.iter().map(|(q, _)| *q).collect();
+            p.samples = lines.iter().flatten().map(|(q, _)| *q).collect();
             p.built = grow;
             // Lay the tag on the longest straight run. Of a two-way pair, each sits toward
             // its own end so the two don't overlap.
@@ -802,7 +971,7 @@ pub fn update(
             } else {
                 0.5
             };
-            for w in p.route.windows(2) {
+            for w in p.route.pieces[p.route.outer].windows(2) {
                 if w[0].surface != w[1].surface {
                     continue;
                 }
@@ -825,7 +994,38 @@ pub fn update(
             m.u = PipeUniform {
                 color: color.extend(glow),
                 p: Vec4::new(p.hl.value.clamp(0.0, 1.0), p.dim.value.clamp(0.0, 1.0), 16.0, 9.0),
+                q: Vec4::new(theme.style.index(), 0.0, 0.0, 0.0),
             };
+        }
+
+        // Ports pop up with the pipe, standing on their platform, tag laid out beyond them.
+        let hl = p.hl.value.clamp(0.0, 1.0);
+        for (port, (body, tag)) in p.route.ports.iter().zip(&p.port_parts) {
+            let r = PIPE_R * geometry.surface_scale(port.at.surface);
+            let top = heights.top(port.at.surface);
+            let pop = (grow * 1.4 - 0.2).clamp(0.0, 1.0);
+            if let Ok((mut tf, mut vis)) = decals.get_mut(*body) {
+                tf.translation = Vec3::new(port.at.p.x, top, port.at.p.y);
+                tf.scale = Vec3::new(r * 2.3, r * 2.9 * pop.max(1e-3), r * 2.3);
+                *vis = if pop > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
+            }
+            if let Some((t, m, size)) = tag {
+                let k = geometry.surface_scale(port.at.surface);
+                let size = *size * k;
+                let reach = if port.side.x != 0.0 { size.x } else { size.y } * 0.5 + r * 3.0;
+                let at = port.at.p + port.side * reach;
+                let alpha = ((grow - 0.9) / 0.1).clamp(0.0, 1.0) * (1.0 - 0.7 * p.dim.value.clamp(0.0, 1.0));
+                if let Ok((mut tf, mut vis)) = decals.get_mut(*t) {
+                    tf.translation = Vec3::new(at.x, top + r * 0.3, at.y);
+                    tf.scale = Vec3::new(size.x, 1.0, size.y);
+                    *vis = if alpha > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
+                }
+                if let Some(mat) = decal_mats.get_mut(m) {
+                    let t = theme.style.text_tint() * 0.9 + if theme.style == Style::Tron { 0.6 * hl } else { 0.0 };
+                mat.u.tint = Vec4::new(t, t, t * 1.08, alpha);
+                    mat.u.p.y = 0.45 + 0.55 * hl;
+                }
+            }
         }
 
         // The tag, painted flat over the pipe.
@@ -840,7 +1040,8 @@ pub fn update(
                 }
             }
             if let Some(mat) = decal_mats.get_mut(m) {
-                mat.u.tint = Vec4::new(1.1 + 0.6 * hl, 1.1 + 0.6 * hl, 1.2 + 0.6 * hl, alpha);
+                let t = theme.style.text_tint() * 0.9 + if theme.style == Style::Tron { 0.6 * hl } else { 0.0 };
+                mat.u.tint = Vec4::new(t, t, t * 1.08, alpha);
                 mat.u.p.y = 0.45 + 0.55 * hl;
             }
         }

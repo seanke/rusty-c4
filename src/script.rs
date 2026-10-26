@@ -2,7 +2,7 @@
 //! `RUSTYC4_SCRIPT="1.0 shot a.png; 1.2 focus shop; 2.5 shot b.png; 3 exit"`. `focus` flies
 //! the camera to an element (or, given nothing, fits everything); `up` zooms out a level.
 //! Each step is `<seconds> <action> [arg]`; actions: shot, focus, up, select, relation
-//! (two fqns), hover, unhover, pan (dx dy), orbit (dx dy), zoom (factor), story (view name), next, prev,
+//! (two fqns), hover, unhover, pan (dx dy), orbit (dx dy), zoom (factor), style (name), story (view name), next, prev,
 //! pause, menu, exit.
 
 use bevy::{
@@ -50,6 +50,7 @@ pub fn run(
     mut queue: ResMut<NavQueue>,
     mut menu: ResMut<crate::ui::Menu>,
     mut playback: ResMut<crate::story::Playback>,
+    mut theme: ResMut<crate::theme::Theme>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut script) = script else { return };
@@ -92,6 +93,11 @@ pub fn run(
                 cam.drag(c, c + Vec2::new(num(0), num(1)));
             }
             "orbit" => cam.orbit(Vec2::new(num(0), num(1))),
+            "style" => {
+                if let Some(s) = crate::theme::Style::parse(&arg) {
+                    theme.set(s);
+                }
+            }
             "zoom" => {
                 let c = cam.viewport / 2.0;
                 cam.zoom_at(c, num(0));

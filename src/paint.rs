@@ -9,8 +9,16 @@ use bevy::{
 };
 use cosmic_text::{fontdb, Align, Attrs, Buffer, Color as Ink, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 
-/// Texels per layout unit: cards are 320 units wide, so about 1000 texels across.
-const TEXELS: f32 = 3.2;
+use crate::theme::Style;
+
+/// Texels per layout unit: cards are 320 units wide, so about 1000 texels across. The
+/// blocky style paints far coarser, sampled without smoothing, so its text is pixelated.
+fn texels(style: Style) -> f32 {
+    match style {
+        Style::Blocky => 1.6,
+        _ => 3.2,
+    }
+}
 
 pub struct Span {
     pub text: String,
@@ -38,31 +46,62 @@ pub struct Painted {
 pub struct Painter {
     fonts: FontSystem,
     cache: SwashCache,
-    family: Option<String>,
+    /// A family for each style (clean sans, handwriting, chunky pixels).
+    families: [Option<String>; 3],
+    pub style: Style,
 }
 
 impl Painter {
     pub fn new() -> Painter {
-        // A family with real bold faces: the system's variable SF font renders its heavier
+        // Families with real bold faces: the system's variable SF font renders its heavier
         // weights slanted through this rasteriser.
         let mut db = fontdb::Database::new();
-        let families: [&[&str]; 4] = [
-            &["/System/Library/Fonts/HelveticaNeue.ttc"],
-            &["/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
-            &["C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\segoeuib.ttf"],
-            &["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"],
+        let choices: [&[&[&str]]; 3] = [
+            &[
+                &["/System/Library/Fonts/HelveticaNeue.ttc"],
+                &["/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
+                &["C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\segoeuib.ttf"],
+                &["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"],
+            ],
+            &[
+                &["/System/Library/Fonts/Noteworthy.ttc"],
+                &["/System/Library/Fonts/Supplemental/Bradley Hand Bold.ttf"],
+                &["C:\\Windows\\Fonts\\segoepr.ttf", "C:\\Windows\\Fonts\\segoeprb.ttf"],
+            ],
+            &[
+                &["/System/Library/Fonts/Supplemental/Silom.ttf"],
+                &["/System/Library/Fonts/Monaco.ttf"],
+                &["C:\\Windows\\Fonts\\consola.ttf", "C:\\Windows\\Fonts\\consolab.ttf"],
+                &["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"],
+            ],
         ];
-        for files in families {
-            let found: Vec<Vec<u8>> = files.iter().filter_map(|p| std::fs::read(p).ok()).collect();
-            if !found.is_empty() {
+        let mut families: [Option<String>; 3] = [None, None, None];
+        for (i, options) in choices.iter().enumerate() {
+            for files in options.iter() {
+                let found: Vec<Vec<u8>> = files.iter().filter_map(|p| std::fs::read(p).ok()).collect();
+                if found.is_empty() {
+                    continue;
+                }
+                let before: std::collections::HashSet<_> = db.faces().map(|f| f.id).collect();
                 for bytes in found {
                     db.load_font_data(bytes);
                 }
+                families[i] = db
+                    .faces()
+                    .find(|f| !before.contains(&f.id))
+                    .and_then(|f| f.families.first())
+                    .map(|f| f.0.clone());
                 break;
             }
         }
-        let family = db.faces().next().and_then(|f| f.families.first()).map(|f| f.0.clone());
-        let fonts = if family.is_some() {
+        // Missing a family: use the first one found.
+        let fallback = families.iter().flatten().next().cloned();
+        for f in &mut families {
+            if f.is_none() {
+                *f = fallback.clone();
+            }
+        }
+        let fonts = if fallback.is_some() {
             FontSystem::new_with_locale_and_db("en-US".into(), db)
         } else {
             FontSystem::new()
@@ -70,21 +109,25 @@ impl Painter {
         Painter {
             fonts,
             cache: SwashCache::new(),
-            family,
+            families,
+            style: Style::Tron,
         }
     }
 
     /// Lay out `spans` within `width` layout units and paint them. Centred text keeps the
     /// full width; left-aligned text is cropped to what it uses.
     pub fn paint(&mut self, spans: &[Span], width: f32, centered: bool) -> Option<Painted> {
-        let family = match &self.family {
+        let style = self.style;
+        let family = match &self.families[style.index() as usize] {
             Some(f) => Family::Name(f.as_str()),
             None => Family::SansSerif,
         };
+        let texels = texels(style);
+        let blocky = style == Style::Blocky;
         let base = Attrs::new().family(family);
         let first = spans.first()?;
-        let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(first.size * TEXELS, first.size * TEXELS * 1.25));
-        buffer.set_size(&mut self.fonts, Some(width * TEXELS), None);
+        let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(first.size * texels, first.size * texels * 1.25));
+        buffer.set_size(&mut self.fonts, Some(width * texels), None);
         let attrs: Vec<(&str, Attrs)> = spans
             .iter()
             .map(|s| {
@@ -99,7 +142,7 @@ impl Painter {
                     .clone()
                     .weight(Weight(s.weight))
                     .color(ink)
-                    .metrics(Metrics::new(s.size * TEXELS, s.size * TEXELS * 1.25));
+                    .metrics(Metrics::new(s.size * texels, s.size * texels * 1.25));
                 (s.text.as_str(), a)
             })
             .collect();
@@ -115,20 +158,24 @@ impl Painter {
         if used_h <= 0.0 {
             return None;
         }
-        let pad = 6;
-        let w = if centered { (width * TEXELS).ceil() as i32 } else { used_w.ceil() as i32 } + pad * 2;
+        let pad = if blocky { 3 } else { 6 };
+        let w = if centered { (width * texels).ceil() as i32 } else { used_w.ceil() as i32 } + pad * 2;
         let h = used_h.ceil() as i32 + pad * 2;
-        // Premultiplied RGBA.
+        // Premultiplied RGBA. Blocky text gets a hard drop shadow first, game style.
         let mut px = vec![0f32; (w * h * 4) as usize];
+        let passes: &[(i32, Option<[f32; 3]>)] = if blocky { &[(1, Some([0.15, 0.15, 0.15])), (0, None)] } else { &[(0, None)] };
+        for &(shift, shadow) in passes {
         buffer.draw(&mut self.fonts, &mut self.cache, Ink::rgb(255, 255, 255), |x, y, gw, gh, ink| {
             let a = ink.a() as f32 / 255.0;
+            // Threshold pixel text so it stays crisp.
+            let a = if blocky { if a > 0.45 { 1.0 } else { 0.0 } } else { a };
             if a <= 0.0 {
                 return;
             }
-            let rgb = [ink.r() as f32 / 255.0, ink.g() as f32 / 255.0, ink.b() as f32 / 255.0];
+            let rgb = shadow.unwrap_or([ink.r() as f32 / 255.0, ink.g() as f32 / 255.0, ink.b() as f32 / 255.0]);
             for yy in y..y + gh as i32 {
                 for xx in x..x + gw as i32 {
-                    let (px_x, px_y) = (xx + pad, yy + pad);
+                    let (px_x, px_y) = (xx + pad + shift, yy + pad + shift);
                     if px_x < 0 || px_y < 0 || px_x >= w || px_y >= h {
                         continue;
                     }
@@ -140,9 +187,10 @@ impl Painter {
                 }
             }
         });
-        let size = Vec2::new(w as f32, h as f32) / TEXELS;
+        }
+        let size = Vec2::new(w as f32, h as f32) / texels;
         Some(Painted {
-            image: mipmapped(px, w as u32, h as u32),
+            image: mipmapped(px, w as u32, h as u32, blocky),
             size,
         })
     }
@@ -150,7 +198,7 @@ impl Painter {
 
 /// An sRGB texture with a full chain of box-filtered mip levels, so text stays smooth when
 /// seen from afar.
-fn mipmapped(level0: Vec<f32>, w: u32, h: u32) -> Image {
+fn mipmapped(level0: Vec<f32>, w: u32, h: u32, pixelated: bool) -> Image {
     let mut data = Vec::new();
     let mut levels = 0;
     let (mut cw, mut ch, mut cur) = (w, h, level0);
@@ -195,10 +243,11 @@ fn mipmapped(level0: Vec<f32>, w: u32, h: u32) -> Image {
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::ClampToEdge,
         address_mode_v: ImageAddressMode::ClampToEdge,
-        mag_filter: ImageFilterMode::Linear,
+        mag_filter: if pixelated { ImageFilterMode::Nearest } else { ImageFilterMode::Linear },
         min_filter: ImageFilterMode::Linear,
         mipmap_filter: ImageFilterMode::Linear,
-        anisotropy_clamp: 8,
+        // Anisotropic filtering only works with all-linear filters.
+        anisotropy_clamp: if pixelated { 1 } else { 8 },
         ..default()
     });
     image
