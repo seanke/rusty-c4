@@ -9,17 +9,16 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use bevy::{
     asset::RenderAssetUsages,
-    camera::visibility::RenderLayers,
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
-    sprite::Anchor,
-    text::TextLayoutInfo,
 };
 
 use crate::camera::Cam;
 use crate::model::{Id, Model};
-use crate::render::{lin, neon, CardMaterial, CardUniform, PipeMaterial, PipeUniform, Spring};
-use crate::scene::{Detail, Diagram, Fonts, SceneAssets, MUTED, OVERLAY, TEXT};
+use crate::labels::{decal, DecalQuad};
+use crate::paint::{span, Painter};
+use crate::render::{neon, DecalMaterial, PipeMaterial, PipeUniform, Spring};
+use crate::scene::{Detail, Diagram, MUTED};
 use crate::world::{Geometry, Heights, View};
 
 /// Pipe radius, in layout units of the level it runs on.
@@ -62,12 +61,11 @@ pub struct Pipe {
     grow: Spring<f32>,
     delay: f32,
     pub dying: bool,
-    /// Whether it belongs to the open level (bright) or the context around it (dim).
-    pub focus: bool,
     built: f32,
     /// The centre line as last built, for picking and the label.
     pub samples: Vec<Vec3>,
-    label: Option<(Entity, Entity, Handle<CardMaterial>)>,
+    /// The painted tag: decal, material, size (layout units).
+    label: Option<(Entity, Handle<DecalMaterial>, Vec2)>,
     label_at: Option<Vec3>,
     label_scale: f32,
 }
@@ -76,10 +74,18 @@ pub struct Pipe {
 pub struct PipeState {
     version: u64,
     resets: u64,
+    story: u64,
+}
+
+impl Pipe {
+    /// Fully drawn and staying.
+    pub fn ready(&self) -> bool {
+        !self.dying && self.built > 0.98
+    }
 }
 
 /// The ancestor-or-self of `x` that is visible.
-fn visible_rep(model: &Model, visible: &HashSet<Id>, mut x: Id) -> Option<Id> {
+pub fn visible_rep(model: &Model, visible: &HashSet<Id>, mut x: Id) -> Option<Id> {
     loop {
         if visible.contains(&x) {
             return Some(x);
@@ -88,14 +94,25 @@ fn visible_rep(model: &Model, visible: &HashSet<Id>, mut x: Id) -> Option<Id> {
     }
 }
 
-pub fn links(model: &Model, visible: &HashSet<Id>) -> Vec<Link> {
+/// The links between visible blocks: the model's relations, plus `extra` (from, to, title)
+/// such as the steps of a dynamic view being played.
+pub fn links(model: &Model, visible: &HashSet<Id>, extra: &[(Id, Id, String)]) -> Vec<Link> {
     let mut map: HashMap<(Id, Id), Link> = HashMap::new();
     let mut order = Vec::new();
-    for r in &model.relations {
-        let (Some(a), Some(b)) = (visible_rep(model, visible, r.source), visible_rep(model, visible, r.target)) else {
+    let all = model
+        .relations
+        .iter()
+        .map(|r| (r.source, r.target, &r.title, false))
+        .chain(extra.iter().map(|(a, b, t)| (*a, *b, t, true)));
+    for (source, target, title, is_extra) in all {
+        let (Some(a), Some(b)) = (visible_rep(model, visible, source), visible_rep(model, visible, target)) else {
             continue;
         };
         if model.is_ancestor_or_self(a, b) || model.is_ancestor_or_self(b, a) {
+            continue;
+        }
+        // Extra links only add a pipe where there is none; they don't count as relations.
+        if is_extra && map.contains_key(&(a, b)) {
             continue;
         }
         let l = map.entry((a, b)).or_insert_with(|| {
@@ -109,7 +126,7 @@ pub fn links(model: &Model, visible: &HashSet<Id>) -> Vec<Link> {
         });
         l.count += 1;
         if l.label.is_empty() {
-            l.label = r.title.clone();
+            l.label = title.clone();
         }
     }
     order.into_iter().map(|k| map[&k].clone()).collect()
@@ -651,42 +668,44 @@ pub fn update(
     view: Res<View>,
     geometry: Res<Geometry>,
     heights: Res<Heights>,
-    cam: Res<Cam>,
-    (fonts, assets): (Res<Fonts>, Res<SceneAssets>),
+    playback: Res<crate::story::Playback>,
+    (mut painter, mut images, quad): (ResMut<Painter>, ResMut<Assets<Image>>, Res<DecalQuad>),
     mut state: ResMut<PipeState>,
     mut current: ResMut<Links>,
     mut pipes: Query<(Entity, &mut Pipe)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<PipeMaterial>>,
-    mut cards: ResMut<Assets<CardMaterial>>,
-    mut texts: Query<(&mut Transform, &mut TextColor, &TextLayoutInfo, &mut Visibility)>,
-    mut bgs: Query<(&mut Transform, &mut Visibility), Without<TextColor>>,
+    mut decal_mats: ResMut<Assets<DecalMaterial>>,
+    mut decals: Query<(&mut Transform, &mut Visibility), Without<Pipe>>,
 ) {
     let dt = time.delta_secs().min(0.05);
     let model = &diagram.model;
 
     if state.resets != view.resets {
         for (e, p) in &pipes {
-            if let Some((t, b, _)) = p.label {
-                commands.entity(t).despawn();
-                commands.entity(b).despawn();
+            if let Some((t, _, _)) = &p.label {
+                commands.entity(*t).despawn();
             }
             commands.entity(e).despawn();
         }
         state.resets = view.resets;
         state.version = u64::MAX;
     }
-    if state.version != view.version {
+    if state.version != view.version || state.story != playback.version {
         state.version = view.version;
-        let ls = links(model, &view.visible);
+        state.story = playback.version;
+        let extra: Vec<(Id, Id, String)> = playback
+            .active
+            .and_then(|i| model.views.get(i))
+            .map(|v| v.steps.iter().map(|s| (s.from, s.to, s.title.clone())).collect())
+            .unwrap_or_default();
+        let ls = links(model, &view.visible, &extra);
         let routes = route_all(model, &geometry, &view, &ls);
-        let focus_level: HashSet<Id> = model.children_of(view.focus).iter().copied().collect();
         let mut kept = HashSet::new();
         for (_, mut p) in &mut pipes {
             if let Some(i) = ls.iter().position(|l| (l.from, l.to) == p.key) {
                 if routes[i].0 == p.route && !p.dying {
                     kept.insert(i);
-                    p.focus = focus_level.contains(&p.from) || focus_level.contains(&p.to);
                     p.bridges = routes[i].1.clone();
                     continue;
                 }
@@ -705,42 +724,17 @@ pub fn update(
             let mesh = meshes.add(tube(&[]));
             let mut grow = Spring::new(0.0);
             grow.target = 1.0;
-            let label = (!l.label.is_empty() || l.count > 1).then(|| {
-                let text = match (l.label.is_empty(), l.count) {
-                    (true, n) => format!("{n} relationships"),
-                    (false, 1) => truncate(&l.label, 40),
-                    (false, n) => format!("{}  +{}", truncate(&l.label, 34), n - 1),
-                };
-                let t = commands
-                    .spawn((
-                        Text2d::new(text),
-                        TextFont {
-                            font: fonts.ui.clone(),
-                            font_size: 13.0,
-                            weight: FontWeight::MEDIUM,
-                            ..default()
-                        },
-                        TextColor(MUTED.with_alpha(0.0)),
-                        Anchor::CENTER,
-                        Transform::from_xyz(0.0, 0.0, 3.1),
-                        Visibility::Hidden,
-                        RenderLayers::layer(OVERLAY),
-                    ))
-                    .id();
-                let m = cards.add(CardMaterial {
-                    u: CardUniform::default(),
-                });
-                let b = commands
-                    .spawn((
-                        Mesh2d(assets.quad.clone()),
-                        MeshMaterial2d(m.clone()),
-                        Transform::from_xyz(0.0, 0.0, 3.0),
-                        Visibility::Hidden,
-                        RenderLayers::layer(OVERLAY),
-                    ))
-                    .id();
-                (t, b, m)
-            });
+            let label = (!l.label.is_empty() || l.count > 1)
+                .then(|| {
+                    let text = match (l.label.is_empty(), l.count) {
+                        (true, n) => format!("{n} relationships"),
+                        (false, 1) => truncate(&l.label, 40),
+                        (false, n) => format!("{}  +{}", truncate(&l.label, 34), n - 1),
+                    };
+                    let spans = [span(format!(" {text} "), 12.5, 500, MUTED.with_alpha(1.0))];
+                    decal(&mut commands, &mut painter, &mut images, &mut decal_mats, &quad, &spans, 600.0, false, true)
+                })
+                .flatten();
             commands.spawn((
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(material.clone()),
@@ -756,9 +750,8 @@ pub fn update(
                     hl: Spring::new(0.0),
                     dim: Spring::new(0.0),
                     grow,
-                    delay: if diagram.view_version <= 1 { 0.9 } else { 0.45 },
+                    delay: if view.version <= 2 { 0.9 } else { 0.3 },
                     dying: false,
-                    focus: focus_level.contains(&l.from) || focus_level.contains(&l.to),
                     built: -1.0,
                     samples: Vec::new(),
                     label,
@@ -788,9 +781,8 @@ pub fn update(
         }
         let grow = p.grow.value.clamp(0.0, 1.0);
         if p.dying && grow < 0.01 {
-            if let Some((t, b, _)) = p.label {
-                commands.entity(t).despawn();
-                commands.entity(b).despawn();
+            if let Some((t, _, _)) = &p.label {
+                commands.entity(*t).despawn();
             }
             commands.entity(e).despawn();
             continue;
@@ -802,8 +794,8 @@ pub fn update(
             }
             p.samples = line.iter().map(|(q, _)| *q).collect();
             p.built = grow;
-            // Hang the label on the longest straight run, preferring the open level. Of a
-            // two-way pair, each sits toward its own end so the two don't overlap.
+            // Lay the tag on the longest straight run. Of a two-way pair, each sits toward
+            // its own end so the two don't overlap.
             let mut best: Option<(f32, Vec3, f32)> = None;
             let along = if two_way.contains(&(p.to, p.from)) {
                 if p.from < p.to { 0.3 } else { 0.7 }
@@ -814,12 +806,12 @@ pub fn update(
                 if w[0].surface != w[1].surface {
                     continue;
                 }
-                let bonus = if w[0].surface == view.focus { 4.0 } else { 1.0 };
-                let len = w[0].p.distance(w[1].p) * bonus;
+                let len = w[0].p.distance(w[1].p);
                 if best.is_none_or(|(l, _, _)| len > l) {
                     let s = geometry.surface_scale(w[0].surface);
                     let mid = w[0].p.lerp(w[1].p, along);
-                    let y = heights.top(w[0].surface) + PIPE_R * s * 1.3;
+                    // Just above the pipe, lying flat over it.
+                    let y = heights.top(w[0].surface) + PIPE_R * s * 2.5;
                     best = Some((len, Vec3::new(mid.x, y, mid.y), s));
                 }
             }
@@ -828,7 +820,7 @@ pub fn update(
         }
         let from = &model.elements[p.from];
         let color = neon(from.color).lerp(Vec3::new(0.05, 0.85, 1.0), 0.55);
-        let glow = if p.focus { 2.4 } else { 0.9 };
+        let glow = 2.2;
         if let Some(m) = mats.get_mut(&p.material) {
             m.u = PipeUniform {
                 color: color.extend(glow),
@@ -836,41 +828,20 @@ pub fn update(
             };
         }
 
-        // Label, on the overlay.
-        if let Some((t, b, m)) = &p.label {
-            let at = p.label_at.and_then(|a| cam.world_to_overlay(a).map(|o| (o, cam.px_per_unit(a))));
+        // The tag, painted flat over the pipe.
+        if let Some((t, m, size)) = &p.label {
             let hl = p.hl.value.clamp(0.0, 1.0);
-            let size_px = at.map_or(0.0, |(_, ppu)| 12.5 * p.label_scale * ppu).min(15.0);
-            let show = (p.focus || hl > 0.1) && size_px > 7.5 && grow > 0.95;
-            let alpha = if show {
-                ((size_px - 7.5) / 2.0).clamp(0.0, 1.0) * (1.0 - 0.75 * p.dim.value.clamp(0.0, 1.0))
-            } else {
-                0.0
-            };
-            if let Ok((mut tf, mut tc, info, mut vis)) = texts.get_mut(*t) {
-                *vis = if alpha > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
-                if let Some((o, _)) = at {
-                    let k = size_px / 13.0;
-                    tf.translation = o.extend(3.1);
-                    tf.scale = Vec3::splat(k);
-                    tc.0 = MUTED.mix(&TEXT, hl).with_alpha(0.9 * alpha);
-                    let size = info.size * k + Vec2::new(16.0, 8.0) * k;
-                    if let Ok((mut bt, mut bv)) = bgs.get_mut(*b) {
-                        *bv = *vis;
-                        bt.translation = o.extend(3.0);
-                        bt.scale = (size + Vec2::splat(8.0)).extend(1.0);
-                    }
-                    if let Some(mat) = cards.get_mut(m) {
-                        mat.u = CardUniform {
-                            fill: lin(Color::srgba(0.01, 0.03, 0.05, 0.92)),
-                            border: lin(Color::srgb(0.1, 0.85, 1.0).with_alpha(0.25 + 0.5 * hl)),
-                            glow: Vec4::ZERO,
-                            dims: Vec4::new(size.x, size.y, size.y * 0.5, 1.0),
-                            p: Vec4::new(alpha, 0.0, 0.0, 0.0),
-                            q: Vec4::new(4.0, 0.0, 0.0, 0.0),
-                        };
-                    }
+            let alpha = if grow > 0.95 { (grow - 0.95) / 0.05 } else { 0.0 } * (1.0 - 0.7 * p.dim.value.clamp(0.0, 1.0));
+            if let Ok((mut tf, mut vis)) = decals.get_mut(*t) {
+                *vis = if alpha > 0.01 && p.label_at.is_some() { Visibility::Inherited } else { Visibility::Hidden };
+                if let Some(at) = p.label_at {
+                    tf.translation = at;
+                    tf.scale = Vec3::new(size.x, 1.0, size.y) * p.label_scale;
                 }
+            }
+            if let Some(mat) = decal_mats.get_mut(m) {
+                mat.u.tint = Vec4::new(1.1 + 0.6 * hl, 1.1 + 0.6 * hl, 1.2 + 0.6 * hl, alpha);
+                mat.u.p.y = 0.45 + 0.55 * hl;
             }
         }
     }

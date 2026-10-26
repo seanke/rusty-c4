@@ -78,6 +78,44 @@ pub struct Relation {
     pub technology: String,
 }
 
+/// One step of a dynamic view: something `from` does to `to`.
+#[derive(Clone, Debug)]
+pub struct Step {
+    pub from: Id,
+    pub to: Id,
+    pub title: String,
+    pub technology: String,
+    /// Written `to <- from`: a reply.
+    pub backward: bool,
+    /// Steps sharing a stage happen together (a `parallel` block).
+    pub stage: usize,
+}
+
+/// A `dynamic view`: a scenario told as an ordered sequence of steps.
+#[derive(Clone, Debug)]
+pub struct DynamicView {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub steps: Vec<Step>,
+}
+
+impl DynamicView {
+    /// The steps grouped by stage, in order.
+    pub fn stages(&self) -> Vec<Vec<usize>> {
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        let mut last = None;
+        for (i, s) in self.steps.iter().enumerate() {
+            if last != Some(s.stage) {
+                out.push(Vec::new());
+                last = Some(s.stage);
+            }
+            out.last_mut().unwrap().push(i);
+        }
+        out
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Model {
     pub elements: Vec<Element>,
@@ -88,6 +126,7 @@ pub struct Model {
     /// as its children so it can be drawn as their container, but it is nobody's parent and
     /// never shows up in paths, breadcrumbs or relationships.
     pub root: Option<Id>,
+    pub views: Vec<DynamicView>,
 }
 
 impl Model {

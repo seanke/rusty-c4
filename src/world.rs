@@ -1,7 +1,8 @@
 //! The 3D world. Every visible element is a block extruded from the surface it stands on:
-//! the floor for top-level elements, or the top of its parent once that parent is opened.
-//! Opening an element raises it into a platform and extrudes its children out of its top.
-//! Nothing else moves or changes size, so the rest of the world stays put around you.
+//! the floor for top-level elements, or the top of its parent once that parent is open.
+//! There is no focus: a block opens by itself once it is big enough on screen, rising into
+//! a platform with its children extruded from its top, and closes again as you zoom away.
+//! Nothing else moves or changes size, so zooming feels like moving through one world.
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,7 +21,11 @@ use crate::scene::{Detail, Diagram};
 /// Height of a closed block, in layout units (cards are 320 × 180).
 pub const BLOCK_H: f32 = 34.0;
 /// How much higher an opened block stands, in layout units.
-pub const RISE: f32 = 130.0;
+pub const RISE: f32 = 80.0;
+/// A block opens when it is this wide on screen (as a fraction of the window), and closes
+/// again below the second, smaller width.
+const OPEN_AT: f32 = 0.42;
+const CLOSE_AT: f32 = 0.32;
 
 /// Where an element's block stands, in world units: `center` and `size` on the ground
 /// plane (x, z), and `scale`, world units per layout unit at its level.
@@ -115,15 +120,13 @@ impl Geometry {
 /// What is open and visible right now.
 #[derive(Resource, Default)]
 pub struct View {
-    pub focus: Option<Id>,
-    /// The opened blocks, from the top level down to the focus.
-    pub opened: Vec<Id>,
+    /// The opened blocks.
+    pub opened: HashSet<Id>,
     pub visible: HashSet<Id>,
-    /// Bumped when the view changes; `resets` when everything is rebuilt.
+    /// Bumped when the open set changes; `resets` when everything is rebuilt.
     pub version: u64,
     pub resets: u64,
-    /// What the camera frames for this view (centre, size on the ground).
-    pub fit: (Vec3, Vec2),
+    synced: u64,
 }
 
 #[derive(Component)]
@@ -238,13 +241,63 @@ fn prism(size: Vec2, radius: f32) -> Mesh {
     mesh
 }
 
-fn target_height(opened: &[Id], id: Id, g: &Geo) -> f32 {
+fn target_height(opened: &HashSet<Id>, id: Id, g: &Geo) -> f32 {
     let h = if opened.contains(&id) { BLOCK_H + RISE } else { BLOCK_H };
     h * g.scale
 }
 
-/// Bring the blocks in line with the diagram's focus: open the path down to it, extrude the
-/// newly visible blocks, and retract the ones no longer visible.
+/// Open the blocks that are big on screen and close the ones that have shrunk away.
+pub fn auto_open(
+    diagram: Res<Diagram>,
+    mut view: ResMut<View>,
+    mut geometry: ResMut<Geometry>,
+    heights: Res<Heights>,
+    cam: Res<Cam>,
+) {
+    if !diagram.loaded || view.resets != diagram.resets {
+        return;
+    }
+    let model = &diagram.model;
+    let screen = Rect::from_corners(Vec2::ZERO, cam.viewport);
+    let mut open: HashSet<Id> = HashSet::new();
+    // Parents before children, so a block can only open once its parent is open.
+    let mut ids: Vec<Id> = view.visible.iter().copied().filter(|id| !model.elements[*id].children.is_empty()).collect();
+    ids.sort_by_key(|id| model.path(Some(*id)).len());
+    for id in ids {
+        if let Some(p) = model.elements[id].parent {
+            if !open.contains(&p) {
+                continue;
+            }
+        }
+        let Some(g) = geometry.geos.get(&id) else { continue };
+        let top = heights.base.get(&id).copied().unwrap_or(0.0) + heights.height.get(&id).copied().unwrap_or(0.0);
+        let h = g.size / 2.0;
+        let mut r: Option<Rect> = None;
+        for (dx, dz) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            if let Some(p) = cam.world_to_screen(Vec3::new(g.center.x + h.x * dx, top, g.center.y + h.y * dz)) {
+                let pr = Rect::from_center_size(p, Vec2::ZERO);
+                r = Some(r.map_or(pr, |a| a.union(pr)));
+            }
+        }
+        let Some(r) = r else { continue };
+        let on_screen = !r.intersect(screen).is_empty();
+        let wide = r.width() / cam.viewport.x.max(1.0);
+        let threshold = if view.opened.contains(&id) { CLOSE_AT } else { OPEN_AT };
+        if on_screen && wide > threshold {
+            open.insert(id);
+        }
+    }
+    if open != view.opened {
+        for &id in &open {
+            geometry.ensure_children(model, id);
+        }
+        view.opened = open;
+        view.version += 1;
+    }
+}
+
+/// Bring the blocks in line with what is open: extrude the newly visible blocks and retract
+/// the ones no longer visible.
 #[allow(clippy::too_many_arguments)]
 pub fn sync_view(
     mut commands: Commands,
@@ -257,12 +310,12 @@ pub fn sync_view(
     mut mats: ResMut<Assets<BlockMaterial>>,
     mut cam: ResMut<Cam>,
 ) {
-    if view.version == diagram.view_version && view.resets == diagram.resets {
+    let reset = view.resets != diagram.resets;
+    if !reset && view.synced == view.version {
         return;
     }
     let intro = std::mem::take(&mut diagram.intro);
     let model = &diagram.model;
-    let reset = view.resets != diagram.resets;
     if reset {
         for (e, _) in &blocks {
             commands.entity(e).despawn();
@@ -270,11 +323,13 @@ pub fn sync_view(
         index.0.clear();
         let aspect = cam.viewport.x / cam.viewport.y.max(1.0);
         geometry.reset(model, aspect);
+        view.opened.clear();
+        view.resets = diagram.resets;
+        view.version += 1;
+        let r = geometry.root_bounds;
+        cam.fit(Vec3::new(r.center().x, 0.0, r.center().y), r.size() + Vec2::splat(120.0), true);
     }
-    let opened = model.path(diagram.focus);
-    for &id in &opened {
-        geometry.ensure_children(model, id);
-    }
+    let opened = view.opened.clone();
     let mut visible: HashSet<Id> = model.roots.iter().copied().collect();
     for &id in &opened {
         visible.extend(model.elements[id].children.iter().copied());
@@ -314,7 +369,7 @@ pub fn sync_view(
                 } else if reset {
                     0.0
                 } else {
-                    0.18
+                    0.12
                 };
                 let start = if reset && !intro { h } else { g.scale * 0.2 };
                 let mut height = Spring::new(start);
@@ -342,32 +397,24 @@ pub fn sync_view(
             }
         }
     }
-
-    // Frame the open level: its platform's top once it has risen, or the whole floor.
-    let fit = match diagram.focus {
-        Some(f) => {
-            let g = geometry.geos[&f];
-            let top: f32 = opened
-                .iter()
-                .map(|id| target_height(&opened, *id, &geometry.geos[id]))
-                .sum();
-            (Vec3::new(g.center.x, top, g.center.y), g.size)
-        }
-        None => {
-            let r = geometry.root_bounds;
-            (Vec3::new(r.center().x, 0.0, r.center().y), r.size() + Vec2::splat(120.0))
-        }
-    };
-    if diagram.detail.is_none() {
-        cam.fit(fit.0, fit.1, intro || reset);
-    }
-
-    view.focus = diagram.focus;
-    view.opened = opened;
     view.visible = visible;
-    view.fit = fit;
-    view.version = diagram.view_version;
-    view.resets = diagram.resets;
+    view.synced = view.version;
+}
+
+/// The innermost open block under a point on the ground, if any.
+pub fn open_under(model: &Model, view: &View, geometry: &Geometry, p: Vec2) -> Option<Id> {
+    view.opened
+        .iter()
+        .copied()
+        .filter(|id| geometry.geos.get(id).is_some_and(|g| g.rect().contains(p)))
+        .max_by_key(|id| model.path(Some(*id)).len())
+}
+
+/// Keep the camera's pivot on the surface under it, so it rides up with rising platforms.
+pub fn follow_surface(diagram: Res<Diagram>, view: Res<View>, geometry: Res<Geometry>, heights: Res<Heights>, mut cam: ResMut<Cam>) {
+    let t = cam.target.target;
+    let under = open_under(&diagram.model, &view, &geometry, Vec2::new(t.x, t.z));
+    cam.target.target.y = heights.top(under);
 }
 
 /// Raise and lower blocks, stack them on their surfaces, and update their materials.
@@ -376,7 +423,6 @@ pub fn animate(
     mut commands: Commands,
     time: Res<Time>,
     diagram: Res<Diagram>,
-    view: Res<View>,
     geometry: Res<Geometry>,
     mut heights: ResMut<Heights>,
     mut index: ResMut<BlockIndex>,
@@ -422,7 +468,6 @@ pub fn animate(
     }
     heights.base = base;
 
-    let focus_level: HashSet<Id> = model.children_of(view.focus).iter().copied().collect();
     let selected = match diagram.detail {
         Some(Detail::Element(id)) => Some(id),
         _ => None,
@@ -440,8 +485,7 @@ pub fn animate(
         tf.scale = Vec3::new(1.0, h.max(1e-4), 1.0);
 
         let el = &model.elements[b.id];
-        let in_focus = focus_level.contains(&b.id) || view.focus == Some(b.id);
-        let glow = if in_focus { 2.6 } else { 1.1 };
+        let glow = 2.4;
         let shape = match el.shape {
             Shape::Rectangle => 0.0,
             s => s.index(),

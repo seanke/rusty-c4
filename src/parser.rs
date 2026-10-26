@@ -19,6 +19,7 @@ enum Tok {
     Dot,
     Arrow,
     BiArrow,
+    BackArrow,
     ArrowOpen,
     ArrowClose,
     Semi,
@@ -121,6 +122,10 @@ fn lex(src: &str) -> Vec<Token> {
                 i += 3;
                 push(Tok::BiArrow);
             }
+            '<' if at(i + 1) == '-' => {
+                i += 2;
+                push(Tok::BackArrow);
+            }
             '{' => {
                 i += 1;
                 push(Tok::LBrace);
@@ -196,7 +201,25 @@ struct Builder {
     elements: HashMap<String, RawElement>,
     order: Vec<String>,
     relations: Vec<RawRelation>,
+    views: Vec<RawView>,
     warnings: Vec<String>,
+}
+
+struct RawStep {
+    from: String,
+    to: String,
+    title: String,
+    technology: String,
+    backward: bool,
+    stage: usize,
+    location: String,
+}
+
+struct RawView {
+    name: String,
+    title: Option<String>,
+    description: String,
+    steps: Vec<RawStep>,
 }
 
 impl Builder {
@@ -335,8 +358,118 @@ impl Parser<'_> {
                         self.parse_model_body("");
                     }
                 }
+                Some(Tok::Ident(k)) if k == "views" => {
+                    self.strings();
+                    if self.eat_block_open() {
+                        self.parse_views();
+                    }
+                }
                 Some(Tok::LBrace) => self.skip_rest_of_block(),
                 _ => {}
+            }
+        }
+    }
+
+    /// A `views` block: dynamic views are read, everything else skipped.
+    fn parse_views(&mut self) {
+        loop {
+            match self.next() {
+                None | Some(Tok::RBrace) => return,
+                Some(Tok::LBrace) => self.skip_rest_of_block(),
+                Some(Tok::Ident(k)) if k == "dynamic" && matches!(self.peek(0), Some(Tok::Ident(v)) if v == "view") => {
+                    self.pos += 1;
+                    let name = self.ident().unwrap_or_default();
+                    let title = self.strings().into_iter().next();
+                    // Skip anything before the body (e.g. tags).
+                    while !matches!(self.peek(0), Some(Tok::LBrace) | Some(Tok::RBrace) | None) {
+                        self.pos += 1;
+                    }
+                    if self.eat_block_open() {
+                        let mut view = RawView {
+                            name,
+                            title,
+                            description: String::new(),
+                            steps: Vec::new(),
+                        };
+                        let mut stage = 0;
+                        self.parse_dynamic(&mut view, &mut stage, false);
+                        self.b.views.push(view);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The body of a dynamic view (or of a `parallel` block inside one, whose steps all
+    /// share a stage).
+    fn parse_dynamic(&mut self, view: &mut RawView, stage: &mut usize, parallel: bool) {
+        loop {
+            let line = self.line();
+            let Some(t) = self.peek(0).cloned() else { return };
+            match t {
+                Tok::RBrace => {
+                    self.pos += 1;
+                    return;
+                }
+                Tok::LBrace => {
+                    self.pos += 1;
+                    self.skip_rest_of_block();
+                }
+                Tok::Ident(k) if (k == "title" || k == "description") && matches!(self.peek(1), Some(Tok::Str(_))) => {
+                    self.pos += 1;
+                    let v = self.string().unwrap_or_default();
+                    if k == "title" {
+                        view.title = Some(v);
+                    } else {
+                        view.description = v;
+                    }
+                }
+                Tok::Ident(k) if (k == "parallel" || k == "par") && self.peek(1) == Some(&Tok::LBrace) => {
+                    self.pos += 2;
+                    self.parse_dynamic(view, stage, true);
+                    *stage += 1;
+                }
+                Tok::Ident(src) if matches!(self.peek(1), Some(Tok::Arrow | Tok::BackArrow)) => {
+                    self.pos += 1;
+                    let backward = self.next() == Some(Tok::BackArrow);
+                    let Some(dst) = self.ident() else {
+                        self.skip_line(line);
+                        continue;
+                    };
+                    let strs = self.strings();
+                    let mut title = strs.first().cloned().unwrap_or_default();
+                    let mut technology = strs.get(1).cloned().unwrap_or_default();
+                    self.skip_tags();
+                    if self.eat_block_open() {
+                        while let Some(t) = self.next() {
+                            match t {
+                                Tok::RBrace => break,
+                                Tok::LBrace => self.skip_rest_of_block(),
+                                Tok::Ident(k) if k == "title" => title = self.string().unwrap_or(title),
+                                Tok::Ident(k) if k == "technology" => technology = self.string().unwrap_or(technology),
+                                _ => {}
+                            }
+                        }
+                    }
+                    let (from, to) = if backward { (dst, src) } else { (src, dst) };
+                    view.steps.push(RawStep {
+                        from,
+                        to,
+                        title,
+                        technology,
+                        backward,
+                        stage: *stage,
+                        location: format!("{}:{}", self.file, line),
+                    });
+                    if !parallel {
+                        *stage += 1;
+                    }
+                }
+                _ => {
+                    self.pos += 1;
+                    self.skip_line(line);
+                }
             }
         }
     }
@@ -735,6 +868,32 @@ fn finish(b: Builder) -> (Model, Vec<String>) {
         }
     }
     model.relations = relations;
+
+    for v in &b.views {
+        let mut steps = Vec::new();
+        for st in &v.steps {
+            match (resolve("", &st.from), resolve("", &st.to)) {
+                (Some(from), Some(to)) => steps.push(Step {
+                    from,
+                    to,
+                    title: tidy(&st.title),
+                    technology: tidy(&st.technology),
+                    backward: st.backward,
+                    stage: st.stage,
+                }),
+                (None, _) => warnings.push(format!("{}: can't resolve `{}`", st.location, st.from)),
+                (_, None) => warnings.push(format!("{}: can't resolve `{}`", st.location, st.to)),
+            }
+        }
+        if !steps.is_empty() {
+            model.views.push(DynamicView {
+                name: v.name.clone(),
+                title: tidy(v.title.as_deref().unwrap_or(&v.name)),
+                description: tidy(&v.description),
+                steps,
+            });
+        }
+    }
     if !model.roots.is_empty() {
         let id = model.elements.len();
         model.elements.push(Element {
@@ -810,6 +969,42 @@ pub fn load(path: &Path) -> Result<(Model, Vec<String>), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_dynamic_views() {
+        let src = r#"
+            model {
+              a = system 'A' { x = container 'X' }
+              b = system 'B'
+            }
+            views {
+              view index { include * }
+              dynamic view flow {
+                title 'The flow'
+                description 'How it goes'
+                a.x -> b 'asks'
+                parallel {
+                  b -> a 'one'
+                  b -> x 'two' { technology 'HTTP' }
+                }
+                a.x <- b 'answers'
+                autoLayout LeftRight
+              }
+            }
+        "#;
+        let (m, warnings) = parse_sources(&[("t.c4".into(), src.into())]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let v = &m.views[0];
+        assert_eq!((v.name.as_str(), v.title.as_str(), v.description.as_str()), ("flow", "The flow", "How it goes"));
+        let fqn = |id: Id| m.elements[id].fqn.as_str();
+        let steps: Vec<_> = v.steps.iter().map(|s| (fqn(s.from), fqn(s.to), s.stage, s.backward)).collect();
+        assert_eq!(
+            steps,
+            vec![("a.x", "b", 0, false), ("b", "a", 1, false), ("b", "a.x", 1, false), ("b", "a.x", 2, true)]
+        );
+        assert_eq!(v.steps[2].technology, "HTTP");
+        assert_eq!(v.stages(), vec![vec![0], vec![1, 2], vec![3]]);
+    }
 
     #[test]
     fn parses_nested_model_and_relations() {

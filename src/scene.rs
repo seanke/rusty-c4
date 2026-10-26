@@ -1,7 +1,6 @@
-//! App state and interaction: what is open, navigation (walking the tree a level at a
-//! time), and the mouse and keyboard.
+//! App state and interaction: loading, flying the camera about, and the mouse and keyboard.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -37,14 +36,11 @@ pub struct Diagram {
     pub loaded: bool,
     /// Why the last attempt to open something failed.
     pub error: Option<String>,
-    /// The deepest opened element (None: the top level).
-    pub focus: Option<Id>,
     /// A card or relationship zoomed in to show its details.
     pub detail: Option<Detail>,
-    /// Bumped whenever the view or selection changes, so the UI knows to rebuild.
+    /// Bumped whenever the selection or model changes, so the UI knows to rebuild.
     pub version: u64,
-    /// Bumped when the 3D view must follow a new focus, and when it must be rebuilt.
-    pub view_version: u64,
+    /// Bumped when the 3D world must be rebuilt.
     pub resets: u64,
     /// The next rebuild should play the opening animation.
     pub intro: bool,
@@ -69,11 +65,10 @@ pub enum Source {
 pub enum Nav {
     /// Replace the open model.
     Load(Source),
-    /// Go to this focus, walking the tree one level at a time.
-    Focus(Option<Id>),
-    /// A single step of a walk.
-    Step(Option<Id>),
-    Up,
+    /// Fly the camera to an element, close enough that it opens.
+    Frame(Id),
+    /// Zoom out one level.
+    Out,
     Detail(Option<Detail>),
     Fit,
     Reload,
@@ -81,30 +76,6 @@ pub enum Nav {
 
 #[derive(Resource, Default)]
 pub struct NavQueue(pub Vec<Nav>);
-
-/// Time between levels when walking the tree, so each hop reads as its own move.
-const WALK_STEP: f32 = 0.55;
-
-/// A multi-level jump in progress: the remaining foci and a detail to open on arrival.
-#[derive(Resource, Default)]
-pub struct Walk {
-    steps: VecDeque<Option<Id>>,
-    detail: Option<Option<Detail>>,
-    timer: f32,
-}
-
-/// The foci between `from` and `to`: up to their common ancestor, then down to `to`.
-fn tree_walk(model: &Model, from: Option<Id>, to: Option<Id>) -> Vec<Option<Id>> {
-    let a = model.path(from);
-    let b = model.path(to);
-    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let mut steps: Vec<Option<Id>> = (common..a.len())
-        .rev()
-        .map(|i| if i == 0 { None } else { Some(a[i - 1]) })
-        .collect();
-    steps.extend(b[common..].iter().map(|&id| Some(id)));
-    steps
-}
 
 #[derive(Resource)]
 pub struct Fonts {
@@ -189,7 +160,7 @@ pub fn setup(
             ..Bloom::NATURAL
         },
         Projection::Perspective(PerspectiveProjection {
-            fov: 0.62,
+            fov: 0.42,
             near: 1.0,
             far: 1e6,
             ..default()
@@ -226,27 +197,32 @@ pub fn setup(
     ));
 }
 
+/// Where an element's top will be once everything above it has opened.
+fn expected_top(model: &Model, geometry: &Geometry, id: Id) -> f32 {
+    model
+        .path(Some(id))
+        .iter()
+        .rev()
+        .skip(1)
+        .filter_map(|a| geometry.geos.get(a))
+        .map(|g| (world::BLOCK_H + world::RISE) * g.scale)
+        .sum()
+}
+
+fn fit_root(cam: &mut Cam, geometry: &Geometry) {
+    let r = geometry.root_bounds;
+    cam.fit(Vec3::new(r.center().x, 0.0, r.center().y), r.size() + Vec2::splat(120.0), false);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn apply_nav(
     mut queue: ResMut<NavQueue>,
     mut diagram: ResMut<Diagram>,
     mut cam: ResMut<Cam>,
     view: Res<View>,
-    time: Res<Time>,
-    mut walk: ResMut<Walk>,
+    mut geometry: ResMut<Geometry>,
     mut watch: ResMut<Watch>,
 ) {
-    if !walk.steps.is_empty() || walk.detail.is_some() {
-        walk.timer -= time.delta_secs();
-        if walk.timer <= 0.0 {
-            if let Some(step) = walk.steps.pop_front() {
-                queue.0.push(Nav::Step(step));
-                walk.timer = WALK_STEP;
-            } else if let Some(d) = walk.detail.take() {
-                queue.0.push(Nav::Detail(d));
-            }
-        }
-    }
     for nav in std::mem::take(&mut queue.0) {
         match nav {
             Nav::Load(source) => {
@@ -265,14 +241,11 @@ pub fn apply_nav(
                         watch.stamp = diagram.path.as_ref().and_then(latest_mtime);
                         diagram.loaded = true;
                         diagram.error = None;
-                        diagram.focus = None;
                         diagram.detail = None;
-                        walk.steps.clear();
-                        walk.detail = None;
                         diagram.intro = true;
                         diagram.resets += 1;
-                        diagram.view_version += 1;
                         diagram.version += 1;
+                        cam.saved = None;
                     }
                     Err(e) => {
                         diagram.error = Some(e);
@@ -280,45 +253,49 @@ pub fn apply_nav(
                     }
                 }
             }
-            Nav::Focus(f) => {
-                walk.steps = tree_walk(&diagram.model, diagram.focus, f).into();
-                walk.detail = None;
-                if let Some(first) = walk.steps.pop_front() {
-                    queue_step(&mut diagram, first);
-                    walk.timer = WALK_STEP;
+            Nav::Frame(id) => {
+                let model = &diagram.model;
+                for a in model.path(Some(id)).iter().rev().skip(1).rev() {
+                    geometry.ensure_children(model, *a);
+                }
+                if let Some(g) = geometry.geos.get(&id).copied() {
+                    let y = expected_top(model, &geometry, id);
+                    cam.fit(Vec3::new(g.center.x, y, g.center.y), g.size * 1.05, false);
                 }
             }
-            Nav::Step(f) => queue_step(&mut diagram, f),
-            Nav::Up => {
-                walk.steps.clear();
-                walk.detail = None;
-                if let Some(f) = diagram.focus {
-                    let up = diagram.model.elements[f].parent;
-                    queue_step(&mut diagram, up);
+            Nav::Out => {
+                if diagram.detail.is_some() {
+                    queue.0.push(Nav::Detail(None));
+                    continue;
+                }
+                // Frame whatever holds the level you're looking at.
+                let t = cam.target.target;
+                let under = world::open_under(&diagram.model, &view, &geometry, Vec2::new(t.x, t.z));
+                match under.and_then(|u| diagram.model.elements[u].parent) {
+                    Some(p) => queue.0.push(Nav::Frame(p)),
+                    None if under.is_some() => fit_root(&mut cam, &geometry),
+                    None => fit_root(&mut cam, &geometry),
                 }
             }
-            // Mid-walk, the detail waits until the walk arrives.
-            Nav::Detail(d) if !walk.steps.is_empty() => walk.detail = Some(d),
             Nav::Detail(d) => {
                 if d.is_none() && diagram.detail.is_some() {
-                    cam.fit(view.fit.0, view.fit.1, false);
+                    if let Some((t, l)) = cam.saved.take() {
+                        cam.target.target = t;
+                        cam.log_dist.target = l;
+                    }
                 }
                 diagram.detail = d;
                 diagram.version += 1;
             }
-            Nav::Fit => cam.fit(view.fit.0, view.fit.1, false),
+            Nav::Fit => fit_root(&mut cam, &geometry),
             Nav::Reload => {
                 let Some(path) = diagram.path.clone() else { continue };
                 match parser::load(&path) {
                     Ok((model, warnings)) => {
-                        let old = &diagram.model;
-                        let focus = diagram.focus.map(|i| old.elements[i].fqn.clone());
-                        diagram.focus = focus.and_then(|f| model.by_fqn.get(&f).copied());
                         diagram.detail = None;
                         diagram.model = model;
                         diagram.warnings = warnings;
                         diagram.resets += 1;
-                        diagram.view_version += 1;
                         diagram.version += 1;
                     }
                     Err(e) => {
@@ -328,15 +305,6 @@ pub fn apply_nav(
                 }
             }
         }
-    }
-}
-
-fn queue_step(diagram: &mut Diagram, focus: Option<Id>) {
-    if diagram.focus != focus {
-        diagram.focus = focus;
-        diagram.detail = None;
-        diagram.view_version += 1;
-        diagram.version += 1;
     }
 }
 
@@ -380,9 +348,9 @@ pub fn pointer(
             }
         }
     }
-    // The open platform under a hovered child is just the ground; don't light it up.
+    // An open platform is ground to stand on; don't light it up.
     ptr.hovered = match hit {
-        Some(Hit::Block(id)) if view.focus != Some(id) => Some(id),
+        Some(Hit::Block(id)) if !view.opened.contains(&id) => Some(id),
         _ => None,
     };
     ptr.hovered_pipe = match hit {
@@ -460,12 +428,10 @@ pub fn pointer(
                                 queue.0.push(Nav::Detail(None));
                             }
                         } else if ptr.pressed_on == hit {
-                            click(&mut queue, &diagram, &view, hit);
+                            click(&mut queue, &diagram, hit);
                         }
                     }
-                    MouseButton::Right => {
-                        queue.0.push(if detail_open { Nav::Detail(None) } else { Nav::Up });
-                    }
+                    MouseButton::Right => queue.0.push(Nav::Out),
                     _ => {}
                 }
             }
@@ -492,35 +458,15 @@ pub fn pointer(
     }
 }
 
-fn click(queue: &mut NavQueue, diagram: &Diagram, view: &View, hit: Option<Hit>) {
+fn click(queue: &mut NavQueue, diagram: &Diagram, hit: Option<Hit>) {
     let model = &diagram.model;
     match hit {
         Some(Hit::Pipe(a, b)) => queue.0.push(Nav::Detail(Some(Detail::Relation(a, b)))),
-        // An opened platform: the open one is just ground; an outer one walks back out.
-        Some(Hit::Block(id)) if view.opened.contains(&id) => {
-            if view.focus != Some(id) {
-                queue.0.push(Nav::Focus(Some(id)));
-            }
-        }
-        Some(Hit::Block(id)) => {
-            let el = &model.elements[id];
-            let on_open_level = el.parent == view.focus;
-            match (on_open_level, el.children.is_empty()) {
-                (_, false) => queue.0.push(Nav::Focus(Some(id))),
-                (true, true) => queue.0.push(Nav::Detail(Some(Detail::Element(id)))),
-                // Somewhere else: walk over to its level, then show it.
-                (false, true) => {
-                    queue.0.push(Nav::Focus(el.parent));
-                    queue.0.push(Nav::Detail(Some(Detail::Element(id))));
-                }
-            }
-        }
-        // The floor, or a lower level: step back out.
-        None => {
-            if diagram.focus.is_some() {
-                queue.0.push(Nav::Up);
-            }
-        }
+        // Something with insides: fly to it (it opens as it fills the view).
+        Some(Hit::Block(id)) if !model.elements[id].children.is_empty() => queue.0.push(Nav::Frame(id)),
+        Some(Hit::Block(id)) => queue.0.push(Nav::Detail(Some(Detail::Element(id)))),
+        // The floor: step back out.
+        None => queue.0.push(Nav::Out),
     }
 }
 
@@ -529,6 +475,7 @@ pub fn keyboard(
     diagram: Res<Diagram>,
     mut menu: ResMut<crate::ui::Menu>,
     mut queue: ResMut<NavQueue>,
+    mut playback: ResMut<crate::story::Playback>,
 ) {
     if !diagram.loaded {
         return;
@@ -540,21 +487,34 @@ pub fn keyboard(
     if menu.open {
         return;
     }
-    if keys.just_pressed(KeyCode::Backspace) {
-        if diagram.detail.is_some() {
-            queue.0.push(Nav::Detail(None));
-        } else {
-            queue.0.push(Nav::Up);
+    // While a dynamic view plays: space plays and pauses, arrows step, backspace stops.
+    if let Some(stages) = playback.active.and_then(|i| diagram.model.views.get(i)).map(|v| v.stages().len()) {
+        if keys.just_pressed(KeyCode::Space) {
+            playback.toggle(stages);
+        }
+        if keys.just_pressed(KeyCode::ArrowRight) {
+            playback.next(stages);
+        }
+        if keys.just_pressed(KeyCode::ArrowLeft) {
+            playback.prev();
+        }
+        if keys.just_pressed(KeyCode::Backspace) && diagram.detail.is_none() {
+            playback.stop();
+            return;
         }
     }
-    if keys.any_just_pressed([KeyCode::KeyF, KeyCode::Space, KeyCode::Digit0]) {
+    if keys.just_pressed(KeyCode::Backspace) {
+        queue.0.push(Nav::Out);
+    }
+    let space_fits = playback.active.is_none() && keys.just_pressed(KeyCode::Space);
+    if space_fits || keys.any_just_pressed([KeyCode::KeyF, KeyCode::Digit0]) {
         queue.0.push(Nav::Fit);
     }
     if keys.just_pressed(KeyCode::KeyR) {
         queue.0.push(Nav::Reload);
     }
     if keys.just_pressed(KeyCode::Home) {
-        queue.0.push(Nav::Focus(None));
+        queue.0.push(Nav::Fit);
     }
 }
 
@@ -569,22 +529,5 @@ pub fn watch_files(time: Res<Time>, mut watch: ResMut<Watch>, diagram: Res<Diagr
     if stamp != watch.stamp {
         watch.stamp = stamp;
         queue.0.push(Nav::Reload);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn walks_up_to_the_common_ancestor_then_down() {
-        let src = "model { a = s { b = s { c = s } d = s } e = s { f = s } }";
-        let (m, _) = parser::parse_sources(&[("t.c4".into(), src.into())]);
-        let id = |f: &str| Some(m.by_fqn[f]);
-        assert_eq!(tree_walk(&m, id("a.b.c"), id("a.d")), vec![id("a.b"), id("a"), id("a.d")]);
-        assert_eq!(tree_walk(&m, id("a.b"), id("e.f")), vec![id("a"), None, id("e"), id("e.f")]);
-        assert_eq!(tree_walk(&m, id("a.b.c"), None), vec![id("a.b"), id("a"), None]);
-        assert_eq!(tree_walk(&m, None, id("a.b")), vec![id("a"), id("a.b")]);
-        assert!(tree_walk(&m, id("a"), id("a")).is_empty());
     }
 }

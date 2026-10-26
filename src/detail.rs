@@ -308,6 +308,9 @@ pub fn update(
             card.size.target = Vec2::new(WIDTH, h);
             card.opacity.target = 1.0;
             view.card = Some(card);
+            if cam.saved.is_none() {
+                cam.saved = Some((cam.target.target, cam.log_dist.target));
+            }
             // Frame the subject in the space left of the card.
             let free = (cam.viewport.x - WIDTH - 64.0) / cam.viewport.x;
             let want = Vec2::new(size.x / free.max(0.3), size.y) * 2.6;

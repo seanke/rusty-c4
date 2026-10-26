@@ -1,107 +1,110 @@
-//! Block titles, drawn on a flat overlay over the 3D scene and sized by perspective, so
-//! they stay crisp. A closed block shows its title (and, up close, its description) on
-//! its top; an opened platform shows its name along the back of its top instead.
+//! Titles painted on the blocks. A closed block shows its title, kind and description in
+//! the middle of its top; as it opens, that slides to a header along the top edge so
+//! everything standing on it can be seen.
 
-use std::collections::HashSet;
+use bevy::prelude::*;
 
-use bevy::{
-    camera::visibility::RenderLayers,
-    prelude::*,
-    sprite::Anchor,
-    text::{LineBreak, TextBounds},
-};
-
-use crate::camera::Cam;
 use crate::model::{Id, Model};
-use crate::scene::{Diagram, Fonts, OVERLAY, TEXT};
+use crate::paint::{span, Painter};
+use crate::render::{DecalMaterial, DecalUniform};
+use crate::scene::{Diagram, TEXT};
 use crate::world::{Block, BlockIndex, Geometry, Heights, View, BLOCK_H};
 
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
-    Card,
-    Header,
-}
+/// Width of a card's text, in layout units (cards are 320 wide).
+const CARD_TEXT: f32 = 276.0;
 
 #[derive(Component)]
 pub struct Label {
     id: Id,
-    kind: Kind,
-    /// The font size the text is laid out at (it is then scaled to its on-screen size).
-    q: f32,
-    /// Each part of the text: entity, size relative to the title, colour, only up close.
-    parts: Vec<(Entity, f32, Color, bool)>,
+    /// The painted card text and its size (layout units), and the header (for blocks with
+    /// children).
+    card: (Entity, Handle<DecalMaterial>, Vec2),
+    header: Option<(Entity, Handle<DecalMaterial>, Vec2)>,
 }
 
-fn quantize(px: f32) -> f32 {
-    2f32.powf((px.max(4.0).log2() * 3.0).round() / 3.0).clamp(6.0, 72.0)
+/// Shared flat quad (1 × 1 on the ground plane) that decals are drawn on.
+#[derive(Resource)]
+pub struct DecalQuad(pub Handle<Mesh>);
+
+pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+    commands.insert_resource(DecalQuad(meshes.add(Plane3d::default().mesh().size(1.0, 1.0))));
+    commands.insert_resource(Painter::new());
 }
 
-fn spawn(commands: &mut Commands, fonts: &Fonts, model: &Model, id: Id, kind: Kind) {
+fn sub_line(model: &Model, id: Id) -> String {
     let el = &model.elements[id];
-    let q = 18.0;
-    let font = |em: f32, weight: FontWeight| TextFont {
-        font: fonts.ui.clone(),
-        font_size: q * em,
-        weight,
-        ..default()
-    };
-    let sub = [el.kind.to_uppercase(), el.technology.clone()]
+    [el.kind.to_uppercase(), el.technology.clone()]
         .into_iter()
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join("  ·  ");
-    let mut parts = Vec::new();
-    let (anchor, justify) = match kind {
-        Kind::Card => (Anchor::CENTER, Justify::Center),
-        Kind::Header => (Anchor::TOP_LEFT, Justify::Left),
-    };
-    let root = commands
-        .spawn((
-            Text2d::new(el.title.clone()),
-            font(1.0, FontWeight::BOLD),
-            TextColor(TEXT.with_alpha(0.0)),
-            TextLayout::new(justify, LineBreak::WordBoundary),
-            TextBounds::new_horizontal(q * 13.5),
-            anchor,
-            Transform::from_xyz(0.0, 0.0, 1.0),
-            Visibility::Hidden,
-            RenderLayers::layer(OVERLAY),
-        ))
-        .id();
-    parts.push((root, 1.0, TEXT, false));
-    if !sub.is_empty() {
-        let c = Color::srgba(0.75, 0.95, 1.0, 0.7);
-        let e = commands
-            .spawn((
-                TextSpan::new(format!("\n{sub}")),
-                font(0.58, FontWeight::SEMIBOLD),
-                TextColor(c.with_alpha(0.0)),
-                ChildOf(root),
-            ))
-            .id();
-        parts.push((e, 0.58, c, false));
-    }
-    if kind == Kind::Card && !el.description.is_empty() {
-        let c = Color::srgba(0.85, 0.92, 1.0, 0.8);
-        let desc: String = if el.description.chars().count() > 90 {
-            format!("{}…", el.description.chars().take(90).collect::<String>().trim_end())
-        } else {
-            el.description.clone()
-        };
-        let e = commands
-            .spawn((
-                TextSpan::new(format!("\n{desc}")),
-                font(0.68, FontWeight::NORMAL),
-                TextColor(c.with_alpha(0.0)),
-                ChildOf(root),
-            ))
-            .id();
-        parts.push((e, 0.68, c, true));
-    }
-    commands.entity(root).insert(Label { id, kind, q, parts });
+        .join("  ·  ")
 }
 
-/// Keep one card label (and, for blocks with children, one header label) per block.
+/// Paint `spans` and put them on a decal.
+pub fn decal(
+    commands: &mut Commands,
+    painter: &mut Painter,
+    images: &mut Assets<Image>,
+    mats: &mut Assets<DecalMaterial>,
+    quad: &DecalQuad,
+    spans: &[crate::paint::Span],
+    width: f32,
+    centered: bool,
+    pill: bool,
+) -> Option<(Entity, Handle<DecalMaterial>, Vec2)> {
+    let painted = painter.paint(spans, width, centered)?;
+    let size = painted.size;
+    let texture = images.add(painted.image);
+    let material = mats.add(DecalMaterial {
+        u: DecalUniform {
+            tint: Vec4::new(1.0, 1.0, 1.0, 0.0),
+            bg: if pill { Vec4::new(0.005, 0.02, 0.035, 0.92) } else { Vec4::ZERO },
+            p: Vec4::new(size.x / size.y, if pill { 0.6 } else { 0.0 }, 0.0, 0.0),
+        },
+        texture,
+    });
+    let e = commands
+        .spawn((Mesh3d(quad.0.clone()), MeshMaterial3d(material.clone()), Transform::default(), Visibility::Hidden))
+        .id();
+    Some((e, material, size))
+}
+
+fn spawn(
+    commands: &mut Commands,
+    painter: &mut Painter,
+    images: &mut Assets<Image>,
+    mats: &mut Assets<DecalMaterial>,
+    quad: &DecalQuad,
+    model: &Model,
+    id: Id,
+) {
+    let el = &model.elements[id];
+    let sub = sub_line(model, id);
+    let soft = Color::srgba(0.85, 0.95, 1.0, 0.85);
+    let cyan = Color::srgba(0.55, 0.95, 1.0, 0.9);
+    let mut spans = vec![span(el.title.clone(), 22.0, 700, TEXT)];
+    if !sub.is_empty() {
+        spans.push(span(format!("\n{sub}"), 12.0, 600, cyan));
+    }
+    if !el.description.is_empty() {
+        spans.push(span(format!("\n{}", el.description), 14.0, 400, soft));
+    }
+    let Some(card) = decal(commands, painter, images, mats, quad, &spans, CARD_TEXT, true, false) else {
+        return;
+    };
+    let header = (!el.children.is_empty())
+        .then(|| {
+            let mut spans = vec![span(el.title.clone(), 30.0, 700, TEXT)];
+            if !sub.is_empty() {
+                spans.push(span(format!("    {sub}"), 15.0, 600, cyan));
+            }
+            decal(commands, painter, images, mats, quad, &spans, 1400.0, false, false)
+        })
+        .flatten();
+    commands.spawn(Label { id, card, header });
+}
+
+/// Keep a label for every block, and lay it on the block's top.
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     mut commands: Commands,
@@ -109,85 +112,86 @@ pub fn update(
     view: Res<View>,
     geometry: Res<Geometry>,
     heights: Res<Heights>,
-    cam: Res<Cam>,
-    fonts: Res<Fonts>,
     index: Res<BlockIndex>,
     blocks: Query<&Block>,
-    mut labels: Query<(Entity, &mut Label, &mut Transform, &mut Visibility, &mut TextBounds)>,
-    mut text: Query<(&mut TextFont, &mut TextColor)>,
+    (mut painter, mut images, quad): (ResMut<Painter>, ResMut<Assets<Image>>, Res<DecalQuad>),
+    mut mats: ResMut<Assets<DecalMaterial>>,
+    labels: Query<(Entity, &Label)>,
+    mut decals: Query<(&mut Transform, &mut Visibility)>,
     mut last_resets: Local<u64>,
 ) {
     let model = &diagram.model;
+    let despawn = |commands: &mut Commands, e: Entity, l: &Label| {
+        commands.entity(l.card.0).despawn();
+        if let Some(h) = &l.header {
+            commands.entity(h.0).despawn();
+        }
+        commands.entity(e).despawn();
+    };
     if *last_resets != view.resets {
         *last_resets = view.resets;
-        for (e, ..) in &labels {
-            commands.entity(e).despawn();
+        for (e, l) in &labels {
+            despawn(&mut commands, e, l);
         }
         return;
     }
-    let mut have: HashSet<(Id, bool)> = HashSet::new();
-    for (e, l, ..) in &labels {
-        if !index.0.contains_key(&l.id) {
-            commands.entity(e).despawn();
+    let mut have = std::collections::HashSet::new();
+    for (e, l) in &labels {
+        if index.0.contains_key(&l.id) {
+            have.insert(l.id);
         } else {
-            have.insert((l.id, l.kind == Kind::Header));
+            despawn(&mut commands, e, l);
         }
     }
     for &id in index.0.keys() {
-        if !have.contains(&(id, false)) {
-            spawn(&mut commands, &fonts, model, id, Kind::Card);
-        }
-        if !model.elements[id].children.is_empty() && !have.contains(&(id, true)) {
-            spawn(&mut commands, &fonts, model, id, Kind::Header);
+        if !have.contains(&id) {
+            spawn(&mut commands, &mut painter, &mut images, &mut mats, &quad, model, id);
         }
     }
 
-    let focus_level: HashSet<Id> = model.children_of(view.focus).iter().copied().collect();
-    for (_, mut l, mut tf, mut vis, mut bounds) in &mut labels {
+    for (_, l) in &labels {
         let Some(b) = index.0.get(&l.id).and_then(|e| blocks.get(*e).ok()) else { continue };
         let Some(g) = geometry.geos.get(&l.id) else { continue };
-        let base = heights.base.get(&l.id).copied().unwrap_or(0.0);
         let h = heights.height.get(&l.id).copied().unwrap_or(0.0);
-        let top = base + h + 0.5 * g.scale;
+        let top = heights.base.get(&l.id).copied().unwrap_or(0.0) + h + 0.4 * g.scale;
         let open = b.open.value.clamp(0.0, 1.0);
-        let (at, em_world, fade) = match l.kind {
-            Kind::Card => (Vec3::new(g.center.x, top, g.center.y), 21.0 * g.scale, 1.0 - open),
-            Kind::Header => match geometry.inner.get(&l.id) {
-                Some(inner) => (Vec3::new(inner.header.x, top, inner.header.y), 26.0 * inner.scale, open),
-                None => (Vec3::ZERO, 0.0, 0.0),
-            },
-        };
         let grown = (h / (BLOCK_H * g.scale * 0.8)).clamp(0.0, 1.0);
-        let screen = cam.world_to_overlay(at);
-        let px = em_world * cam.px_per_unit(at);
-        let level = if focus_level.contains(&l.id) || view.focus == Some(l.id) { 1.0 } else { 0.55 };
-        // Fade out titles too small to read, and ones so close they'd fill the screen.
-        let (too_big, over) = if level < 1.0 { (22.0, 8.0) } else { (46.0, 12.0) };
-        let readable = ((px - 6.0) / 3.0).clamp(0.0, 1.0) * (1.0 - ((px - too_big) / over).clamp(0.0, 1.0));
-        let alpha = fade * grown * level * readable * (1.0 - 0.6 * b.dim.value.clamp(0.0, 1.0));
-        let Some(o) = screen.filter(|_| alpha > 0.01) else {
-            *vis = Visibility::Hidden;
-            continue;
+        let center = Vec2::new(g.center.x, g.center.y);
+
+        // Where the header sits once open: along the top edge, left-aligned.
+        let header = l.header.as_ref().zip(geometry.inner.get(&l.id)).map(|(hd, inner)| {
+            let size = hd.2 * inner.scale;
+            let at = inner.header + Vec2::new(size.x / 2.0, size.y / 2.0);
+            (at, size)
+        });
+        let card_size = l.card.2 * g.scale;
+        let (header_at, header_size) = header.unwrap_or((center, card_size));
+
+        let place = |e: Entity, at: Vec2, size: Vec2, decals: &mut Query<(&mut Transform, &mut Visibility)>, alpha: f32| {
+            if let Ok((mut tf, mut vis)) = decals.get_mut(e) {
+                tf.translation = Vec3::new(at.x, top, at.y);
+                tf.scale = Vec3::new(size.x, 1.0, size.y);
+                *vis = if alpha > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
+            }
         };
-        *vis = Visibility::Inherited;
-        let q = quantize(px);
-        if q != l.q {
-            l.q = q;
-            for &(e, em, ..) in &l.parts {
-                if let Ok((mut f, _)) = text.get_mut(e) {
-                    f.font_size = q * em;
-                }
+        let tint = |m: &Handle<DecalMaterial>, alpha: f32, mats: &mut Assets<DecalMaterial>| {
+            if let Some(mat) = mats.get_mut(m) {
+                mat.u.tint = Vec4::new(1.25, 1.25, 1.3, alpha);
             }
-            bounds.width = Some(q * 13.5);
-        }
-        tf.translation = o.extend(1.0);
-        tf.scale = Vec3::splat(px / q);
-        let near = ((px - 15.0) / 4.0).clamp(0.0, 1.0);
-        for &(e, _, c, close_only) in &l.parts {
-            if let Ok((_, mut tc)) = text.get_mut(e) {
-                let a = if close_only { alpha * near } else { alpha };
-                tc.0 = c.with_alpha(c.alpha() * a);
-            }
+        };
+        // The card text slides toward the header and fades; the header fades in as it lands.
+        let card_alpha = grown * (1.0 - open * 1.6).max(0.0);
+        // Both keep their proportions: each scales uniformly between the two sizes.
+        let at = center.lerp(header_at, open);
+        let card_scale = 1.0 + ((header_size.y / card_size.y).min(1.0) - 1.0) * open;
+        place(l.card.0, at, card_size * card_scale, &mut decals, card_alpha);
+        tint(&l.card.1, card_alpha, &mut mats);
+        if let Some(hd) = &l.header {
+            let alpha = grown * open;
+            let start = (card_size.x / header_size.x).min(1.0);
+            let header_scale = start + (1.0 - start) * open;
+            place(hd.0, at, header_size * header_scale, &mut decals, alpha);
+            tint(&hd.1, alpha, &mut mats);
         }
     }
 }

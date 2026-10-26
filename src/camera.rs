@@ -13,7 +13,7 @@ use bevy::{
 
 use crate::render::Spring;
 
-const FOV: f32 = 0.62;
+const FOV: f32 = 0.42;
 pub const DEFAULT_PITCH: f32 = 1.02;
 
 #[derive(Resource)]
@@ -28,6 +28,8 @@ pub struct Cam {
     /// Cursor position injected by the script driver; overrides the real one.
     pub fake_cursor: Option<Vec2>,
     pub over_ui: bool,
+    /// Where the camera was before it flew to a detail card, to return there after.
+    pub saved: Option<(Vec3, f32)>,
 }
 
 impl Default for Cam {
@@ -41,6 +43,7 @@ impl Default for Cam {
             cursor: None,
             fake_cursor: None,
             over_ui: false,
+            saved: None,
         }
     }
 }
@@ -90,13 +93,6 @@ impl Cam {
 
     pub fn screen_to_overlay(&self, s: Vec2) -> Vec2 {
         Vec2::new(s.x - self.viewport.x / 2.0, self.viewport.y / 2.0 - s.y)
-    }
-
-    /// Screen pixels per world unit at `p`.
-    pub fn px_per_unit(&self, p: Vec3) -> f32 {
-        let fwd = (self.target.value - self.eye()).normalize_or(Vec3::NEG_Z);
-        let depth = (p - self.eye()).dot(fwd).max(1e-4);
-        self.viewport.y / (2.0 * (FOV / 2.0).tan() * depth)
     }
 
     /// The ray through a screen point: origin and direction.

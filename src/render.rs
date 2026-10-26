@@ -130,6 +130,46 @@ impl Material for FloorMaterial {
     }
 }
 
+#[derive(Clone, Copy, Default, Debug, ShaderType)]
+pub struct DecalUniform {
+    /// rgb: tint (HDR), a: opacity
+    pub tint: Vec4,
+    /// pill backing colour; a = 0 for none
+    pub bg: Vec4,
+    /// width / height, pill border alpha
+    pub p: Vec4,
+}
+
+/// Painted text lying on a surface (see `decal.wgsl`).
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+pub struct DecalMaterial {
+    #[uniform(0)]
+    pub u: DecalUniform,
+    #[texture(1)]
+    #[sampler(2)]
+    pub texture: Handle<Image>,
+}
+
+impl Material for DecalMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://rustyc4/decal.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Premultiplied
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        Ok(())
+    }
+}
+
 /// A saturated, bright version of an element's colour for neon edges, in linear space.
 pub fn neon(c: [f32; 3]) -> Vec3 {
     let hsv: Hsva = Color::srgb(c[0], c[1], c[2]).into();

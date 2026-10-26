@@ -1,23 +1,15 @@
-//! Screen-space overlay: breadcrumbs, hints, warnings, the welcome screen and pause menu.
+//! Screen-space overlay: hints, warnings, the welcome screen and pause menu.
 
 use bevy::{ecs::system::NonSendMarker, prelude::*, window::FileDragAndDrop};
 
-use crate::model::Id;
 use crate::scene::{Diagram, Fonts, Nav, NavQueue, Source, ACCENT, MUTED, TEXT};
 
-const PANEL_BG: Color = Color::srgba(0.07, 0.08, 0.105, 0.92);
 const HAIRLINE: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
-
-#[derive(Component)]
-pub struct CrumbBar;
-
-#[derive(Component)]
-pub struct Crumb(Option<Id>);
 
 #[derive(Component)]
 pub struct WarnText;
 
-/// Shown only while a model is open (breadcrumbs, hints).
+/// Shown only while a model is open (hints).
 #[derive(Component)]
 pub struct WhenLoaded;
 
@@ -95,25 +87,6 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            top: px(16),
-            left: px(16),
-            flex_direction: FlexDirection::Row,
-            align_items: AlignItems::Center,
-            column_gap: px(2),
-            padding: UiRect::all(px(5)),
-            border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(12)),
-            ..default()
-        },
-        BackgroundColor(PANEL_BG),
-        BorderColor::all(HAIRLINE),
-        CrumbBar,
-        WhenLoaded,
-    ));
-
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
             bottom: px(14),
             left: px(0),
             right: px(0),
@@ -123,7 +96,7 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
         WhenLoaded,
         children![(
             Text::new(
-                "scroll / pinch  zoom      drag  pan      right-drag  orbit      click  open      click outside / backspace  back      f  fit      esc  menu"
+                "scroll / pinch  zoom      drag  pan      right-drag  orbit      click  fly to      backspace / right-click  zoom out      f  fit      esc  menu"
             ),
             font(&fonts, 12.0, FontWeight::MEDIUM),
             TextColor(Color::srgba(0.85, 0.88, 0.95, 0.38)),
@@ -220,76 +193,10 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
         });
 }
 
-pub fn crumb_clicks(
-    mut crumbs: Query<(&Interaction, &Crumb, &mut BackgroundColor), Changed<Interaction>>,
-    mut queue: ResMut<NavQueue>,
-) {
-    for (interaction, crumb, mut bg) in &mut crumbs {
-        bg.0 = match interaction {
-            Interaction::Pressed => {
-                queue.0.push(Nav::Focus(crumb.0));
-                Color::srgba(1.0, 1.0, 1.0, 0.12)
-            }
-            Interaction::Hovered => Color::srgba(1.0, 1.0, 1.0, 0.07),
-            Interaction::None => Color::NONE,
-        };
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
-pub fn update(
-    mut commands: Commands,
-    diagram: Res<Diagram>,
-    fonts: Res<Fonts>,
-    mut state: ResMut<UiState>,
-    bar: Single<Entity, With<CrumbBar>>,
-    mut warn: Single<&mut Text, With<WarnText>>,
-) {
-    let model = &diagram.model;
-
+pub fn update(diagram: Res<Diagram>, mut state: ResMut<UiState>, mut warn: Single<&mut Text, With<WarnText>>) {
     if state.version != diagram.version {
         state.version = diagram.version;
-
-        // Breadcrumbs.
-        commands.entity(*bar).despawn_related::<Children>();
-        let mut items: Vec<Option<Id>> = vec![None];
-        items.extend(model.path(diagram.focus).into_iter().map(Some));
-        let last = items.len() - 1;
-        for (i, item) in items.into_iter().enumerate() {
-            if i > 0 {
-                commands.spawn((
-                    Text::new("›"),
-                    font(&fonts, 15.0, FontWeight::MEDIUM),
-                    TextColor(Color::srgba(0.85, 0.88, 0.95, 0.3)),
-                    ChildOf(*bar),
-                ));
-            }
-            let label = match item {
-                Some(id) => model.elements[id].title.clone(),
-                None => "Landscape".to_string(),
-            };
-            let current = i == last;
-            commands.spawn((
-                Button,
-                Node {
-                    padding: UiRect::axes(px(10), px(6)),
-                    border_radius: BorderRadius::all(px(8)),
-                    ..default()
-                },
-                BackgroundColor(Color::NONE),
-                Crumb(item),
-                ChildOf(*bar),
-                children![(
-                    Text::new(label),
-                    font(
-                        &fonts,
-                        14.0,
-                        if current { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM }
-                    ),
-                    TextColor(if current { TEXT } else { MUTED }),
-                )],
-            ));
-        }
 
         warn.0 = match diagram.warnings.as_slice() {
             [] => String::new(),

@@ -4268,6 +4268,7 @@ name = "rustyc4"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "cosmic-text",
  "rfd",
 ]
 

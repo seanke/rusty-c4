@@ -1,7 +1,9 @@
 //! Tiny scripted driver for headless checks and recording demos, enabled with
-//! `RUSTYC4_SCRIPT="1.0 shot a.png; 1.2 focus shop; 2.5 shot b.png; 3 exit"`.
+//! `RUSTYC4_SCRIPT="1.0 shot a.png; 1.2 focus shop; 2.5 shot b.png; 3 exit"`. `focus` flies
+//! the camera to an element (or, given nothing, fits everything); `up` zooms out a level.
 //! Each step is `<seconds> <action> [arg]`; actions: shot, focus, up, select, relation
-//! (two fqns), hover, unhover, pan (dx dy), orbit (dx dy), menu, exit.
+//! (two fqns), hover, unhover, pan (dx dy), orbit (dx dy), zoom (factor), story (view name), next, prev,
+//! pause, menu, exit.
 
 use bevy::{
     prelude::*,
@@ -47,6 +49,7 @@ pub fn run(
     mut cam: ResMut<Cam>,
     mut queue: ResMut<NavQueue>,
     mut menu: ResMut<crate::ui::Menu>,
+    mut playback: ResMut<crate::story::Playback>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut script) = script else { return };
@@ -65,8 +68,8 @@ pub fn run(
                     .spawn(Screenshot::primary_window())
                     .observe(save_to_disk(arg));
             }
-            "focus" => queue.0.push(Nav::Focus(id)),
-            "up" => queue.0.push(Nav::Up),
+            "focus" => queue.0.push(match id { Some(i) => Nav::Frame(i), None => Nav::Fit }),
+            "up" => queue.0.push(Nav::Out),
             "select" => queue.0.push(Nav::Detail(id.map(crate::scene::Detail::Element))),
             "relation" => {
                 let ids: Vec<_> = arg.split_whitespace().filter_map(|f| diagram.model.by_fqn.get(f)).collect();
@@ -89,6 +92,23 @@ pub fn run(
                 cam.drag(c, c + Vec2::new(num(0), num(1)));
             }
             "orbit" => cam.orbit(Vec2::new(num(0), num(1))),
+            "zoom" => {
+                let c = cam.viewport / 2.0;
+                cam.zoom_at(c, num(0));
+            }
+            "story" => {
+                if let Some(i) = diagram.model.views.iter().position(|v| v.name == arg) {
+                    playback.start(i);
+                }
+            }
+            "next" | "prev" | "pause" => {
+                let stages = playback.active.and_then(|i| diagram.model.views.get(i)).map_or(0, |v| v.stages().len());
+                match action.as_str() {
+                    "next" => playback.next(stages),
+                    "prev" => playback.prev(),
+                    _ => playback.toggle(stages),
+                }
+            }
             "menu" => menu.open = !menu.open,
             "exit" => {
                 exit.write(AppExit::Success);
