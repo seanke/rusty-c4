@@ -7,10 +7,10 @@ Every element is a block extruded from a neon grid floor, with its name painted 
 and relationships are glowing pipes routed between them at right angles; where two pipes
 have to cross, one bridges over the other. There are no separate levels to switch between:
 zoom in and any block that grows big enough rises into a platform, its title sliding to the
-top edge as its children extrude out of it; zoom out and they sink away again. A pipe from
-outside still runs into the container's side as before, and comes up through a small port
-on the platform beside the component it belongs to, labelled with where it comes from or
-goes to.
+top edge as its children extrude out of it; zoom out and they sink away again. Pipes never
+move once laid: a pipe from outside still runs into the container's side as before, and
+comes up through a small port on the platform beside the component it belongs to, labelled
+with where it comes from or goes to. Ports and tags are placed so that nothing overlaps.
 
 Four looks to choose from: **Tron** (neon edges on dark glass, with bloom), **Sketch**
 (pen and ink on paper, with hatched sides and handwriting), **Blocky** (pixel-textured
@@ -36,8 +36,10 @@ Files are watched and reloaded on save.
 
 ## Editing
 
-Press ⌘E (or click **Source**, top left) to open the source panel: a tree of the project's
-files and folders, and an editor for the one you pick. The 3D view updates as you type.
+Press ⌘E (or click **Source**, top left) to split the window: the 3D view on the left, the
+source on the right (drag the divider to resize). For a project, the files and folders are
+listed down the panel's left; a single Mermaid diagram just gets the editor. The 3D view
+updates as you type.
 
 - Problems are underlined with a squiggle, red for errors and amber for warnings, and
   explained in the status bar when the cursor is on them.

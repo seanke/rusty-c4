@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 use bevy::{
     asset::RenderAssetUsages,
+    window::{CursorIcon, SystemCursorIcon},
     ecs::system::NonSendMarker,
     input::{
         keyboard::{Key, KeyboardInput},
@@ -28,8 +29,9 @@ use crate::scene::{Diagram, Fonts, Watch, TEXT};
 use crate::ui::WhenLoaded;
 use crate::workspace::Workspace;
 
-/// Panel width, in logical pixels.
-pub const PANEL_W: f32 = 540.0;
+/// Starting panel width, and the file list's width, in logical pixels.
+pub const PANEL_W: f32 = 620.0;
+const TREE_W: f32 = 180.0;
 const FONT: f32 = 13.0;
 const LINE: f32 = 19.0;
 const GUTTER: f32 = 44.0;
@@ -169,6 +171,10 @@ pub struct Code {
     popup: Buffer,
     pub open: bool,
     pub focused: bool,
+    /// The panel's width (logical pixels), set by dragging the divider.
+    pub width: f32,
+    resizing: bool,
+    divider_cursor: bool,
     /// Escape was used to leave the editor this frame (so it shouldn't open the menu too).
     swallowed: bool,
     /// What is loaded: (workspace generation, file index, file revision).
@@ -194,6 +200,11 @@ pub struct Code {
 }
 
 impl Code {
+    /// How much of the window's width the panel takes (0 when closed).
+    pub fn split_width(&self) -> f32 {
+        if self.open { self.width } else { 0.0 }
+    }
+
     /// Keys are going to the editor; the rest of the app should leave them alone.
     pub fn captures_keys(&self) -> bool {
         (self.open && self.focused) || self.swallowed
@@ -339,6 +350,9 @@ pub struct Toggle;
 #[derive(Component)]
 pub struct FixButton;
 
+#[derive(Component)]
+pub struct Divider;
+
 fn ui_font(fonts: &Fonts, size: f32, weight: FontWeight) -> TextFont {
     TextFont {
         font: fonts.ui.clone(),
@@ -396,6 +410,9 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
         popup,
         open: false,
         focused: false,
+        width: PANEL_W,
+        resizing: false,
+        divider_cursor: false,
         swallowed: false,
         loaded: None,
         lang: Lang::C4,
@@ -416,7 +433,7 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
         pending_save: false,
     });
 
-    let panel_bg = Color::srgba(0.045, 0.055, 0.075, 0.97);
+    let panel_bg = Color::srgb(0.045, 0.055, 0.075);
     let hairline = Color::srgba(1.0, 1.0, 1.0, 0.08);
     // The button that opens the panel.
     commands.spawn((
@@ -440,17 +457,17 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
             TextColor(TEXT.with_alpha(0.85)),
         )],
     ));
+    // Docked on the right, full height; the 3D view gets the rest of the window.
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                top: px(16),
-                right: px(16),
-                bottom: px(52),
+                top: px(0),
+                right: px(0),
+                bottom: px(0),
                 width: px(PANEL_W),
                 flex_direction: FlexDirection::Column,
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(12)),
+                border: UiRect::left(px(1)),
                 overflow: Overflow::clip(),
                 display: Display::None,
                 ..default()
@@ -463,77 +480,118 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
         .with_children(|p| {
             p.spawn((
                 Node {
-                    padding: UiRect::new(px(14), px(14), px(10), px(8)),
-                    ..default()
-                },
-                Text::new("SOURCE"),
-                ui_font(&fonts, 11.5, FontWeight::SEMIBOLD),
-                TextColor(Color::srgba(0.72, 0.9, 1.0, 0.75)),
-                Header,
-            ));
-            p.spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    max_height: percent(30),
-                    padding: UiRect::new(px(6), px(6), px(0), px(6)),
+                    padding: UiRect::new(px(14), px(14), px(14), px(12)),
                     border: UiRect::bottom(px(1)),
-                    overflow: Overflow::scroll_y(),
-                    flex_shrink: 0.0,
-                    ..default()
-                },
-                BorderColor::all(hairline),
-                ScrollPosition::default(),
-                RelativeCursorPosition::default(),
-                Tree,
-            ));
-            p.spawn((
-                Node {
-                    flex_grow: 1.0,
-                    min_height: px(0),
-                    ..default()
-                },
-                ImageNode::new(image),
-                RelativeCursorPosition::default(),
-                Interaction::default(),
-                CodeView,
-            ));
-            p.spawn((
-                Node {
-                    flex_direction: FlexDirection::Row,
-                    align_items: AlignItems::Center,
-                    column_gap: px(8),
-                    padding: UiRect::axes(px(14), px(7)),
-                    border: UiRect::top(px(1)),
                     flex_shrink: 0.0,
                     ..default()
                 },
                 BorderColor::all(hairline),
             ))
-            .with_children(|row| {
-                row.spawn((
-                    Node {
-                        flex_grow: 1.0,
-                        ..default()
-                    },
-                    Text::new(""),
-                    ui_font(&fonts, 12.0, FontWeight::MEDIUM),
-                    TextColor(Color::srgba(0.8, 0.86, 0.95, 0.75)),
-                    Status,
-                ));
-                row.spawn((
-                    Button,
-                    Node {
-                        padding: UiRect::axes(px(10), px(4)),
-                        border_radius: BorderRadius::all(px(6)),
-                        display: Display::None,
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgba(0.25, 0.5, 0.9, 0.35)),
-                    FixButton,
-                    children![(Text::new("Fix  ⌘."), ui_font(&fonts, 12.0, FontWeight::SEMIBOLD), TextColor(TEXT))],
+            .with_children(|h| {
+                h.spawn((
+                    Text::new("SOURCE"),
+                    ui_font(&fonts, 11.5, FontWeight::SEMIBOLD),
+                    TextColor(Color::srgba(0.72, 0.9, 1.0, 0.75)),
+                    Header,
                 ));
             });
+            // Files on the left, the editor on the right.
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                flex_grow: 1.0,
+                min_height: px(0),
+                ..default()
+            })
+            .with_children(|split| {
+                split.spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        width: px(TREE_W),
+                        flex_shrink: 0.0,
+                        padding: UiRect::axes(px(6), px(8)),
+                        border: UiRect::right(px(1)),
+                        overflow: Overflow::scroll_y(),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
+                    BorderColor::all(hairline),
+                    ScrollPosition::default(),
+                    RelativeCursorPosition::default(),
+                    Tree,
+                ));
+                split
+                    .spawn(Node {
+                        flex_direction: FlexDirection::Column,
+                        flex_grow: 1.0,
+                        min_width: px(0),
+                        ..default()
+                    })
+                    .with_children(|col| {
+                        col.spawn((
+                            Node {
+                                flex_grow: 1.0,
+                                min_height: px(0),
+                                ..default()
+                            },
+                            ImageNode::new(image),
+                            RelativeCursorPosition::default(),
+                            Interaction::default(),
+                            CodeView,
+                        ));
+                        col.spawn((
+                            Node {
+                                flex_direction: FlexDirection::Row,
+                                align_items: AlignItems::Center,
+                                column_gap: px(8),
+                                padding: UiRect::axes(px(14), px(7)),
+                                border: UiRect::top(px(1)),
+                                flex_shrink: 0.0,
+                                ..default()
+                            },
+                            BorderColor::all(hairline),
+                        ))
+                        .with_children(|row| {
+                            row.spawn((
+                                Node {
+                                    flex_grow: 1.0,
+                                    ..default()
+                                },
+                                Text::new(""),
+                                ui_font(&fonts, 12.0, FontWeight::MEDIUM),
+                                TextColor(Color::srgba(0.8, 0.86, 0.95, 0.75)),
+                                Status,
+                            ));
+                            row.spawn((
+                                Button,
+                                Node {
+                                    padding: UiRect::axes(px(10), px(4)),
+                                    border_radius: BorderRadius::all(px(6)),
+                                    display: Display::None,
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgba(0.25, 0.5, 0.9, 0.35)),
+                                FixButton,
+                                children![(Text::new("Fix  ⌘."), ui_font(&fonts, 12.0, FontWeight::SEMIBOLD), TextColor(TEXT))],
+                            ));
+                        });
+                    });
+            });
         });
+    // The divider: drag it to resize the panel.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(0),
+            bottom: px(0),
+            right: px(PANEL_W - 4.0),
+            width: px(8),
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        Interaction::default(),
+        Divider,
+    ));
 }
 
 /// Words that could complete `word`: keywords, element kinds and names.
@@ -1067,10 +1125,13 @@ pub fn draw(
         panel.display = display;
     }
     for mut n in &mut views_panel {
-        n.right = px(if code.open { 16.0 + PANEL_W + 12.0 } else { 16.0 });
+        n.right = px(16.0 + code.split_width());
     }
     if display == Display::None || ws.files.is_empty() {
         return;
+    }
+    if !panel.width.eq(&px(code.width)) {
+        panel.width = px(code.width);
     }
     let active = ws.active.min(ws.files.len() - 1);
 
@@ -1363,4 +1424,74 @@ fn render(code: &mut Code, diags: &[&Diagnostic]) -> Vec<u8> {
         });
     }
     px
+}
+
+/// The 3D view takes what the panel leaves: size the cameras to it, let the divider be
+/// dragged, show the file list only when there's a project to list, and keep the bars at
+/// the bottom centred under the view.
+#[allow(clippy::too_many_arguments)]
+pub fn split(
+    mut commands: Commands,
+    mut code: ResMut<Code>,
+    ws: Res<Workspace>,
+    window: Single<(Entity, &Window)>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut divider: Single<(&Interaction, &mut Node), With<Divider>>,
+    mut tree: Single<&mut Node, (With<Tree>, Without<Divider>)>,
+    mut bars: Query<&mut Node, (Or<(With<crate::ui::HintBar>, With<crate::story::PlayerBar>)>, Without<Divider>, Without<Tree>)>,
+    mut cameras: Query<&mut Camera, Or<(With<Camera3d>, With<crate::scene::OverlayCamera>)>>,
+    diagram: Res<Diagram>,
+) {
+    let (win_e, win) = *window;
+    let open = code.open && diagram.loaded;
+    let (interaction, ref mut div) = *divider;
+    // Drag the divider to resize.
+    if open && *interaction == Interaction::Pressed && mouse.just_pressed(MouseButton::Left) {
+        code.resizing = true;
+    }
+    if code.resizing {
+        if mouse.pressed(MouseButton::Left) {
+            if let Some(c) = win.cursor_position() {
+                code.width = (win.width() - c.x).clamp(380.0, (win.width() * 0.75).max(380.0));
+            }
+        } else {
+            code.resizing = false;
+        }
+    }
+    let over = open && (*interaction != Interaction::None || code.resizing);
+    if over != code.divider_cursor {
+        code.divider_cursor = over;
+        let icon = if over { SystemCursorIcon::ColResize } else { SystemCursorIcon::Default };
+        commands.entity(win_e).insert(CursorIcon::from(icon));
+    }
+    let display = if open { Display::Flex } else { Display::None };
+    if div.display != display {
+        div.display = display;
+    }
+    div.right = px(code.width - 4.0);
+
+    // Files on the left for a project; a lone Mermaid diagram needs no list.
+    let show_tree = ws.files.len() > 1 || ws.files.iter().any(|f| !is_mermaid(&f.rel));
+    let tree_display = if show_tree { Display::Flex } else { Display::None };
+    if tree.display != tree_display {
+        tree.display = tree_display;
+    }
+
+    let w = code.split_width();
+    for mut n in &mut bars {
+        n.right = px(w);
+    }
+    let sf = win.scale_factor();
+    let full = win.physical_size();
+    let viewport = (w > 0.0).then(|| bevy::camera::Viewport {
+        physical_position: UVec2::ZERO,
+        physical_size: UVec2::new(full.x.saturating_sub((w * sf) as u32).max(1), full.y.max(1)),
+        depth: 0.0..1.0,
+    });
+    let key = |v: &Option<bevy::camera::Viewport>| v.as_ref().map(|v| (v.physical_position, v.physical_size));
+    for mut cam in &mut cameras {
+        if key(&cam.viewport) != key(&viewport) {
+            cam.viewport = viewport.clone();
+        }
+    }
 }

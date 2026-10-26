@@ -16,6 +16,10 @@ pub struct WhenLoaded;
 #[derive(Component)]
 pub struct Welcome;
 
+/// The hint bar along the bottom.
+#[derive(Component)]
+pub struct HintBar;
+
 #[derive(Component)]
 pub struct PauseMenu;
 
@@ -96,6 +100,7 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
             ..default()
         },
         WhenLoaded,
+        HintBar,
         children![(
             Node {
                 padding: UiRect::axes(px(14), px(5)),

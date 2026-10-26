@@ -156,6 +156,7 @@ fn main() {
                 ui::menu_buttons,
                 ui::style_buttons,
                 editor::draw,
+                editor::split,
                 ui::file_drop,
                 ui::dialogs,
                 ui::overlays,

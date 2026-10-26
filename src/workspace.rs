@@ -75,10 +75,9 @@ impl Example {
     pub fn files(self) -> Vec<(&'static str, &'static str)> {
         match self {
             Example::Cloud => vec![("cloud.c4", include_str!("../examples/cloud.c4"))],
-            Example::Mermaid => vec![
-                ("platform.mmd", include_str!("../examples/mermaid/platform.mmd")),
-                ("publish.mmd", include_str!("../examples/mermaid/publish.mmd")),
-            ],
+            // A single Mermaid diagram; open the `examples/mermaid` folder for the sequence
+            // diagram that goes with it.
+            Example::Mermaid => vec![("platform.mmd", include_str!("../examples/mermaid/platform.mmd"))],
         }
     }
 }
@@ -106,7 +105,7 @@ mod tests {
             let sources: Vec<(String, String)> = ex.files().into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect();
             let (m, d) = parse_sources(&sources);
             assert!(d.is_empty(), "{ex:?}: {d:?}");
-            assert!(!m.views.is_empty(), "{ex:?} has dynamic views");
+            assert!(ex == Example::Mermaid || !m.views.is_empty(), "{ex:?} has dynamic views");
         }
     }
 }

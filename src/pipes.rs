@@ -1,10 +1,10 @@
-//! Relationships as pipes. Each one is routed once per view, at right angles like a circuit
-//! trace, between the two blocks that hold its ends on the surface they share: into a
-//! container's side, just as when it was closed. Where an end is inside an open container,
-//! a small port pops up on the platform beside it, with a short pipe plugged in and the name
-//! of the far end painted alongside. Routing avoids blocks and prefers not to cross other
-//! pipes; where it has to, the later pipe arches over as a little bridge. The pipes never
-//! move by themselves; they only follow platforms rising and sinking.
+//! Relationships as pipes. Two blocks standing on the same surface are joined by one trunk,
+//! routed at right angles like a circuit trace, into their sides. Trunks are planned once
+//! and then left alone, so opening a container never moves anything outside it: instead,
+//! for each level a relationship goes down through, a small port pops up on the platform
+//! beside the component it belongs to, with a short pipe plugged in and the far end's name
+//! painted alongside. Ports and tags are placed where they fit, clear of blocks, other pipes
+//! and each other; where two trunks must cross, the later one arches over as a bridge.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -17,7 +17,7 @@ use bevy::{
 
 use crate::camera::Cam;
 use crate::model::{Id, Model};
-use crate::labels::{decal, DecalQuad};
+use crate::labels::{decal_with, DecalQuad};
 use crate::paint::{span, Painter};
 use crate::render::{neon, DecalMaterial, PipeMaterial, PipeUniform, Spring};
 use crate::scene::{Detail, Diagram};
@@ -50,35 +50,45 @@ struct Waypoint {
     p: Vec2,
 }
 
-/// Where a pipe comes up on a platform to plug into the element beside it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Port {
-    at: Waypoint,
-    /// Outward from the element it plugs into.
-    side: Vec2,
-    /// The element at the pipe's far end, and whether the pipe heads there.
-    far: Id,
-    outgoing: bool,
+/// What a pipe is: a trunk between two blocks on a surface, or a port beside a block on its
+/// platform, for the relationship with `far` (outgoing when it leads there).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub enum PipeId {
+    Trunk(Option<Id>, Id, Id),
+    Port { block: Id, far: Id, outgoing: bool },
 }
 
-/// A routed link: the outer run between the blocks on their shared surface, plus a short
-/// run from each port into its element, in order from the source to the target.
-#[derive(Clone, Debug, PartialEq, Default)]
-pub struct Route {
-    pieces: Vec<Vec<Waypoint>>,
-    outer: usize,
-    ports: Vec<Port>,
+/// Where a pipe was put. Planned once, then kept (until the model changes), so nothing
+/// already on screen moves when something new is added.
+#[derive(Clone)]
+struct Placed {
+    surface: Option<Id>,
+    piece: Vec<Waypoint>,
+    bridges: Vec<Waypoint>,
+    cells: Vec<(usize, usize)>,
+    spots: Vec<(Id, usize, i64)>,
+    /// Areas kept clear for this pipe's port and tag.
+    reserved: Vec<Rect>,
+    /// The port's position, for a port pipe.
+    port: Option<Vec2>,
+    /// The painted tag (image, size in world units) and where it lies, if it fits.
+    tag: Option<(Handle<Image>, Vec2, Vec2)>,
+    seq: u64,
 }
 
 #[derive(Component)]
 pub struct Pipe {
+    /// The blocks it joins, for hovering and details.
     pub key: (Id, Id),
     pub from: Id,
     pub to: Id,
-    route: Route,
+    /// The visible relationships it carries.
+    pub links: Vec<(Id, Id)>,
+    id: PipeId,
+    piece: Vec<Waypoint>,
     bridges: Vec<Waypoint>,
-    /// Each port's model (body and ring) and painted tag.
-    port_parts: Vec<(Entity, Option<(Entity, Handle<DecalMaterial>, Vec2)>)>,
+    port: Option<(Entity, Vec2, Option<Id>)>,
+    tag: Option<(Entity, Handle<DecalMaterial>, Vec2, Vec2, Option<Id>)>,
     mesh: Handle<Mesh>,
     material: Handle<PipeMaterial>,
     pub hl: Spring<f32>,
@@ -87,12 +97,19 @@ pub struct Pipe {
     delay: f32,
     pub dying: bool,
     built: f32,
-    /// The centre line as last built, for picking and the label.
+    /// The centre line as last built, for picking and the story's pulses.
     pub samples: Vec<Vec3>,
-    /// The painted tag: decal, material, size (layout units).
-    label: Option<(Entity, Handle<DecalMaterial>, Vec2)>,
-    label_at: Option<Vec3>,
-    label_scale: f32,
+}
+
+impl Pipe {
+    /// Fully drawn and staying.
+    pub fn ready(&self) -> bool {
+        !self.dying && self.built > 0.98
+    }
+
+    pub fn is_trunk(&self) -> bool {
+        matches!(self.id, PipeId::Trunk(..))
+    }
 }
 
 #[derive(Resource, Default)]
@@ -102,13 +119,8 @@ pub struct PipeState {
     story: u64,
     /// The next routing follows an in-place rebuild: show the pipes at once.
     instant: bool,
-}
-
-impl Pipe {
-    /// Fully drawn and staying.
-    pub fn ready(&self) -> bool {
-        !self.dying && self.built > 0.98
-    }
+    placed: HashMap<PipeId, Placed>,
+    seq: u64,
 }
 
 /// The ancestor-or-self of `x` that is visible.
@@ -169,6 +181,8 @@ struct Surf {
     nx: usize,
     ny: usize,
     blocked: Vec<bool>,
+    /// Cells under ports and tags: pipes go round them if they can.
+    avoid: Vec<bool>,
     /// Axes used by pipes already routed through each cell: 1 along x, 2 along z.
     used: Vec<u8>,
 }
@@ -184,6 +198,7 @@ impl Surf {
             nx,
             ny,
             blocked: vec![false; nx * ny],
+            avoid: vec![false; nx * ny],
             used: vec![0; nx * ny],
         };
         for r in obstacles {
@@ -277,6 +292,9 @@ impl Surf {
                 if ring < 3 {
                     cost += 12 * (3 - ring as u32);
                 }
+                if self.avoid[nc] {
+                    cost += 150;
+                }
                 let used = self.used[nc];
                 if used & axis != 0 {
                     cost += 120;
@@ -296,6 +314,25 @@ impl Surf {
             }
         }
         None
+    }
+
+    /// Cells overlapping `r`.
+    fn cells_in(&self, r: Rect) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let (i0, j0) = self.cell_of(r.min);
+        let (i1, j1) = self.cell_of(r.max);
+        (j0..=j1).flat_map(move |j| (i0..=i1).map(move |i| (i, j)))
+    }
+
+    fn mark_avoid(&mut self, r: Rect) {
+        let cells: Vec<_> = self.cells_in(r).collect();
+        for (i, j) in cells {
+            self.avoid[j * self.nx + i] = true;
+        }
+    }
+
+    /// Whether `r` lies over a pipe (other than on the `own` cells).
+    fn over_pipes(&self, r: Rect, own: &HashSet<(usize, usize)>) -> bool {
+        self.cells_in(r).any(|(i, j)| self.used[j * self.nx + i] != 0 && !own.contains(&(i, j)))
     }
 
     /// Record a path, returning where it crosses pipes already there.
@@ -367,8 +404,12 @@ struct Router<'a> {
     model: &'a Model,
     geometry: &'a Geometry,
     surfs: HashMap<Option<Id>, Surf>,
-    /// Places along block and platform sides already taken: (owner, side, cell).
+    /// Places along block sides already taken: (owner, side, cell).
     taken: HashSet<(Id, usize, i64)>,
+    /// Spots taken while placing the current pipe.
+    new_spots: Vec<(Id, usize, i64)>,
+    /// Areas on each surface kept clear for ports and tags.
+    reserved: HashMap<Option<Id>, Vec<Rect>>,
 }
 
 impl Router<'_> {
@@ -390,6 +431,7 @@ impl Router<'_> {
             }
             let key = (owner, side_i, (a / s.cell).round() as i64);
             if self.taken.insert(key) {
+                self.new_spots.push(key);
                 along = a;
                 break;
             }
@@ -415,161 +457,258 @@ impl Router<'_> {
         s.cell_of(q)
     }
 
-    fn path(&mut self, surf: Option<Id>, a: (usize, usize), ad: usize, b: (usize, usize), bd: usize, bridges: &mut Vec<Waypoint>) -> Vec<Waypoint> {
-        let s = self.surfs.get_mut(&surf).unwrap();
-        let cells = s.astar(a, ad, b, bd).unwrap_or_else(|| {
-            // No clear way: an L, straight through.
-            vec![a, (b.0, a.1), b]
-        });
-        for c in s.claim(&cells) {
-            bridges.push(Waypoint { surface: surf, p: c });
-        }
-        corners(s, &cells)
-    }
-
-    /// Route out of `a` into the free space beside it, on the surface it stands on, leaving
-    /// by the side facing `toward`. Returns the waypoints, the cell reached and the heading.
-    fn leave(&mut self, a: Id, toward: Vec2) -> (Vec<Waypoint>, (usize, usize), usize) {
-        let g = self.geometry.geos[&a];
-        let surf = self.model.elements[a].parent;
-        let side = pick_side(g.rect(), toward);
-        let wall = self.spot(a, g.rect(), side, toward, surf);
-        let r = PIPE_R * self.geometry.surface_scale(surf);
-        let cell = self.out_cell(surf, wall + side * 0.01, side);
-        let out = vec![
-            Waypoint {
-                surface: surf,
-                p: wall - side * r * 1.5,
-            },
-            Waypoint {
-                surface: surf,
-                p: self.surfs[&surf].center(cell.0, cell.1),
-            },
-        ];
-        (out, cell, dir_index(side))
-    }
-
-    /// A port beside `x` on its platform, on the side facing `toward`, and the short run
-    /// from `x` out to it.
-    fn port(&mut self, x: Id, toward: Vec2, far: Id, outgoing: bool) -> (Vec<Waypoint>, Port) {
-        let g = self.geometry.geos[&x];
-        let surf = self.model.elements[x].parent;
-        let side = pick_side(g.rect(), toward);
-        let wall = self.spot(x, g.rect(), side, toward, surf);
+    /// Where ports and tags may go on a surface: inside a platform's edge, or anywhere on the
+    /// floor near the diagram.
+    fn bounds(&self, surf: Option<Id>) -> Rect {
         let s = &self.surfs[&surf];
-        let r = PIPE_R * self.geometry.surface_scale(surf);
-        // A little way out, nearer if something else is in the way.
-        let mut dist = s.cell * (CLEAR + 2.6);
-        while dist > s.cell * 1.2 {
-            let c = s.cell_of(wall + side * dist);
-            if !s.blocked[c.1 * s.nx + c.0] {
-                break;
-            }
-            dist -= s.cell;
+        let r = Rect::from_corners(s.min, s.min + Vec2::new(s.nx as f32, s.ny as f32) * s.cell);
+        match surf {
+            Some(_) => Rect::from_center_size(r.center(), r.size() + Vec2::splat(s.cell * 0.8)),
+            None => r,
         }
-        let at = Waypoint {
-            surface: surf,
-            p: wall + side * dist,
-        };
-        let piece = vec![
-            Waypoint {
-                surface: surf,
-                p: wall - side * r * 1.5,
-            },
-            at,
-        ];
-        (piece, Port { at, side, far, outgoing })
     }
 
-    fn route(&mut self, link: &Link) -> (Route, Vec<Waypoint>) {
-        let model = self.model;
-        let surfaces_a: Vec<Option<Id>> = std::iter::successors(Some(model.elements[link.from].parent), |s| s.map(|x| model.elements[x].parent)).collect();
-        let surfaces_b: Vec<Option<Id>> = std::iter::successors(Some(model.elements[link.to].parent), |s| s.map(|x| model.elements[x].parent)).collect();
-        let common = surfaces_a.iter().find(|s| surfaces_b.contains(s)).copied().flatten();
-        // The blocks standing on the shared surface that hold each end.
-        let stand = |mut x: Id| {
-            while model.elements[x].parent != common {
-                match model.elements[x].parent {
-                    Some(p) => x = p,
-                    None => break,
+    /// Whether `r` is somewhere free on `surf`: in bounds, off every block (and `exclude`'s
+    /// pipes), clear of reserved areas and other pipes.
+    fn free(&self, surf: Option<Id>, r: Rect, own: &HashSet<(usize, usize)>) -> bool {
+        let b = self.bounds(surf);
+        if !(b.contains(r.min) && b.contains(r.max)) {
+            return false;
+        }
+        let k = self.geometry.surface_scale(surf);
+        let blocks = self.model.children_of(surf).iter().filter_map(|c| self.geometry.geos.get(c));
+        for g in blocks {
+            let gr = Rect::from_center_size(g.rect().center(), g.rect().size() + Vec2::splat(6.0 * k));
+            if !gr.intersect(r).is_empty() {
+                return false;
+            }
+        }
+        if self.reserved.get(&surf).is_some_and(|rs| rs.iter().any(|x| !x.intersect(r).is_empty())) {
+            return false;
+        }
+        !self.surfs[&surf].over_pipes(r, own)
+    }
+
+    fn reserve(&mut self, surf: Option<Id>, r: Rect) {
+        self.reserved.entry(surf).or_default().push(r);
+        if let Some(s) = self.surfs.get_mut(&surf) {
+            s.mark_avoid(r);
+        }
+    }
+
+    /// A trunk between `a` and `b`, standing on `surf`.
+    fn trunk(&mut self, surf: Option<Id>, a: Id, b: Id) -> Placed {
+        let (ga, gb) = (self.geometry.geos[&a], self.geometry.geos[&b]);
+        let r = PIPE_R * self.geometry.surface_scale(surf);
+        let leave = |router: &mut Self, x: Id, toward: Vec2| {
+            let g = router.geometry.geos[&x];
+            let side = pick_side(g.rect(), toward);
+            let wall = router.spot(x, g.rect(), side, toward, surf);
+            let cell = router.out_cell(surf, wall + side * 0.01, side);
+            (wall - side * r * 1.5, cell, dir_index(side))
+        };
+        let (pa, ca, da) = leave(self, a, gb.center);
+        let (pb, cb, db) = leave(self, b, ga.center);
+        let s = self.surfs.get_mut(&surf).unwrap();
+        let cells = s.astar(ca, da, cb, db ^ 1).unwrap_or_else(|| vec![ca, (cb.0, ca.1), cb]);
+        let bridges = s.claim(&cells).into_iter().map(|p| Waypoint { surface: surf, p }).collect();
+        let mut piece = vec![Waypoint { surface: surf, p: pa }];
+        piece.extend(corners(s, &cells));
+        piece.push(Waypoint { surface: surf, p: pb });
+        piece.dedup();
+        Placed {
+            surface: surf,
+            piece,
+            bridges,
+            cells,
+            spots: std::mem::take(&mut self.new_spots),
+            reserved: Vec::new(),
+            port: None,
+            tag: None,
+            seq: 0,
+        }
+    }
+
+    /// Lay a tag of `size` on the trunk: on a straight run, clear of everything else; or
+    /// beside it; or not at all if nowhere fits.
+    fn trunk_tag(&mut self, placed: &Placed, size: Vec2) -> Option<Vec2> {
+        let surf = placed.surface;
+        let own: HashSet<(usize, usize)> = placed.cells.iter().copied().collect();
+        let mut runs: Vec<(Vec2, Vec2)> = placed.piece.windows(2).map(|w| (w[0].p, w[1].p)).collect();
+        runs.sort_by(|x, y| y.0.distance(y.1).total_cmp(&x.0.distance(x.1)));
+        let k = self.geometry.surface_scale(surf);
+        for &(a, b) in &runs {
+            let dir = (b - a).normalize_or(Vec2::X);
+            let perp = Vec2::new(-dir.y, dir.x);
+            let side_reach = (perp.x.abs() * size.x + perp.y.abs() * size.y) * 0.5 + PIPE_R * k * 2.5;
+            for t in [0.5, 0.35, 0.65, 0.2, 0.8] {
+                let c = a.lerp(b, t);
+                for off in [0.0, side_reach, -side_reach] {
+                    let r = Rect::from_center_size(c + perp * off, size + Vec2::splat(4.0 * k));
+                    if self.free(surf, r, &own) {
+                        return Some(c + perp * off);
+                    }
                 }
             }
-            x
-        };
-        let (ea, eb) = (stand(link.from), stand(link.to));
-        let (ga, gb) = (self.geometry.geos[&ea], self.geometry.geos[&eb]);
-        let mut bridges = Vec::new();
-        let (mut outer, ca, da) = self.leave(ea, gb.center);
-        let (wb, cb, db) = self.leave(eb, ga.center);
-        let mid = self.path(common, ca, da, cb, db ^ 1, &mut bridges);
-        outer.extend(mid);
-        outer.extend(wb.into_iter().rev());
-        outer.dedup();
+        }
+        None
+    }
 
-        let mut route = Route::default();
-        if ea != link.from {
-            let (piece, port) = self.port(link.from, outer[0].p, link.to, true);
-            route.pieces.push(piece);
-            route.ports.push(port);
+    /// A port beside `block` (on its parent's platform) toward `toward`, with room for a tag
+    /// of `size`: the first spot round the block where neither overlaps anything.
+    fn port(&mut self, block: Id, toward: Vec2, size: Option<Vec2>) -> Placed {
+        let surf = self.model.elements[block].parent;
+        let g = self.geometry.geos[&block];
+        let rect = g.rect();
+        let k = self.geometry.surface_scale(surf);
+        let cell = self.surfs[&surf].cell;
+        let r = PIPE_R * k;
+        let rp = r * 2.6;
+        let gap = r * 1.5;
+        let first = pick_side(rect, toward);
+        let sides = [first, Vec2::new(first.y, first.x), Vec2::new(-first.y, -first.x), -first];
+        let none = HashSet::new();
+        let mut fallback: Option<(Vec2, Vec2, Vec2, Option<Rect>)> = None;
+        for side in sides {
+            let axis = if side.x != 0.0 { 1 } else { 0 };
+            let (lo, hi) = if axis == 1 { (rect.min.y, rect.max.y) } else { (rect.min.x, rect.max.x) };
+            let want = if axis == 1 { toward.y } else { toward.x };
+            let base = want.clamp(lo + cell, hi - cell);
+            let mut offsets: Vec<f32> = (0..24).map(|i| if i % 2 == 0 { i / 2 } else { -(i / 2 + 1) } as f32 * cell * 0.75).collect();
+            offsets.retain(|o| (base + o) >= lo + cell * 0.6 && (base + o) <= hi - cell * 0.6);
+            for d in [cell * 2.0, cell * 3.0, cell * 4.2] {
+                for o in &offsets {
+                    let along = base + o;
+                    let wall = if axis == 1 {
+                        Vec2::new(if side.x > 0.0 { rect.max.x } else { rect.min.x }, along)
+                    } else {
+                        Vec2::new(along, if side.y > 0.0 { rect.max.y } else { rect.min.y })
+                    };
+                    let at = wall + side * d;
+                    let port_r = Rect::from_center_size(at, Vec2::splat(rp * 2.0));
+                    // The short run from the wall to the port must be clear too.
+                    let run = Rect::from_corners(wall + side * r * 2.0, at).inflate(r);
+                    if !self.free(surf, port_r, &none) || !self.free(surf, run, &none) {
+                        continue;
+                    }
+                    let Some(size) = size else {
+                        return self.finish_port(block, side, wall, at, None, None);
+                    };
+                    // The tag beyond the port, or to either side of it.
+                    let beyond = side * ((side.x.abs() * size.x + side.y.abs() * size.y) * 0.5 + rp + gap);
+                    let across = Vec2::new(side.y.abs(), side.x.abs()) * ((side.y.abs() * size.x + side.x.abs() * size.y) * 0.5 + rp + gap);
+                    for off in [beyond, across, -across] {
+                        let tag = Rect::from_center_size(at + off, size + Vec2::splat(4.0 * k));
+                        if self.free(surf, tag, &none) && tag.intersect(run).is_empty() {
+                            return self.finish_port(block, side, wall, at, Some(at + off), Some(tag));
+                        }
+                    }
+                    fallback.get_or_insert((side, wall, at, None));
+                }
+            }
         }
-        let toward_b = outer.last().map_or(gb.center, |w| w.p);
-        route.outer = route.pieces.len();
-        route.pieces.push(outer);
-        if eb != link.to {
-            let (mut piece, port) = self.port(link.to, toward_b, link.from, false);
-            piece.reverse();
-            route.pieces.push(piece);
-            route.ports.push(port);
+        // Nowhere for the tag: keep the port alone (its far end shows on hover and click).
+        let (side, wall, at, _) = fallback.unwrap_or((first, rect.center() + first * rect.half_size(), rect.center() + first * (rect.half_size() + Vec2::splat(cell * 2.0)), None));
+        self.finish_port(block, side, wall, at, None, None)
+    }
+
+    fn finish_port(&mut self, block: Id, side: Vec2, wall: Vec2, at: Vec2, tag_at: Option<Vec2>, tag: Option<Rect>) -> Placed {
+        let surf = self.model.elements[block].parent;
+        let k = self.geometry.surface_scale(surf);
+        let r = PIPE_R * k;
+        let cell = self.surfs[&surf].cell;
+        let spot = (block, dir_index(side), ((if side.x != 0.0 { wall.y } else { wall.x }) / cell).round() as i64);
+        self.taken.insert(spot);
+        let port_r = Rect::from_center_size(at, Vec2::splat(r * 5.2));
+        let run = Rect::from_corners(wall, at).inflate(r);
+        let mut reserved = vec![port_r, run];
+        reserved.extend(tag);
+        for rr in &reserved {
+            self.reserve(surf, *rr);
         }
-        (route, bridges)
+        Placed {
+            surface: surf,
+            piece: vec![Waypoint { surface: surf, p: wall - side * r * 1.5 }, Waypoint { surface: surf, p: at }],
+            bridges: Vec::new(),
+            cells: Vec::new(),
+            spots: vec![spot],
+            reserved,
+            port: Some(at),
+            tag: tag_at.map(|p| (Handle::default(), Vec2::ZERO, p)),
+            seq: 0,
+        }
     }
 }
 
-fn route_all(model: &Model, geometry: &Geometry, view: &View, heights_hint: &[Link]) -> Vec<(Route, Vec<Waypoint>)> {
-    // A routing grid per surface: the floor, and the top of each opened platform.
-    let mut surfs = HashMap::new();
-    let mut surfaces: Vec<Option<Id>> = vec![None];
-    surfaces.extend(view.opened.iter().map(|x| Some(*x)));
-    for s in surfaces {
-        let items: Vec<Rect> = model
-            .children_of(s)
-            .iter()
-            .filter_map(|c| geometry.geos.get(c).map(|g| g.rect()))
-            .collect();
-        let scale = geometry.surface_scale(s);
-        let cell = CELL * scale;
-        let bounds = match s {
-            None => {
-                let b = items.iter().copied().reduce(|a, b| a.union(b)).unwrap_or(geometry.root_bounds);
-                Rect::from_center_size(b.center(), b.size() + Vec2::splat(cell * 28.0))
+/// The surface two blocks share, and the blocks standing on it that hold each.
+fn trunk_of(model: &Model, a: Id, b: Id) -> (Option<Id>, Id, Id) {
+    let up = |x: Id| std::iter::successors(Some(model.elements[x].parent), |s| s.map(|y| model.elements[y].parent)).collect::<Vec<_>>();
+    let (sa, sb) = (up(a), up(b));
+    let common = sa.iter().find(|s| sb.contains(s)).copied().flatten();
+    let stand = |mut x: Id| {
+        while model.elements[x].parent != common {
+            match model.elements[x].parent {
+                Some(p) => x = p,
+                None => break,
             }
-            // Keep pipes off a platform's rim.
-            Some(x) => {
-                let r = geometry.geos[&x].rect();
-                Rect::from_center_size(r.center(), r.size() - Vec2::splat(cell * 2.0))
-            }
-        };
-        surfs.insert(s, Surf::new(s, bounds, cell, &items));
-    }
-    let mut router = Router {
-        model,
-        geometry,
-        surfs,
-        taken: HashSet::new(),
+        }
+        x
     };
-    // Short links first, so they get the straightest runs.
-    let mut order: Vec<usize> = (0..heights_hint.len()).collect();
-    order.sort_by(|&a, &b| {
-        let len = |l: &Link| {
-            let (p, q) = (geometry.geos[&l.from].center, geometry.geos[&l.to].center);
-            (p - q).abs().element_sum()
-        };
-        len(&heights_hint[a]).total_cmp(&len(&heights_hint[b]))
-    });
-    let mut out = vec![(Route::default(), Vec::new()); heights_hint.len()];
-    for i in order {
-        out[i] = router.route(&heights_hint[i]);
+    (common, stand(a), stand(b))
+}
+
+/// The tag for a trunk: every relationship from inside `a` to inside `b`, as a C4 diagram
+/// at that level would show it.
+fn trunk_label(model: &Model, a: Id, b: Id, extra: &[(Id, Id, String)]) -> String {
+    let inside = |x: Id, y: Id| model.is_ancestor_or_self(x, y);
+    let mut titles: Vec<&str> = model
+        .relations
+        .iter()
+        .filter(|r| inside(a, r.source) && inside(b, r.target))
+        .map(|r| r.title.as_str())
+        .collect();
+    if titles.is_empty() {
+        titles = extra.iter().filter(|(s, t, _)| inside(a, *s) && inside(b, *t)).map(|(_, _, t)| t.as_str()).collect();
     }
+    let first = titles.iter().find(|t| !t.is_empty()).copied().unwrap_or("");
+    match (first.is_empty(), titles.len()) {
+        (_, 0) => String::new(),
+        (true, 1) => String::new(),
+        (true, n) => format!("{n} relationships"),
+        (false, 1) => truncate(first, 40),
+        (false, n) => format!("{}  +{}", truncate(first, 34), n - 1),
+    }
+}
+
+/// Every pipe the visible links need, in a stable order: the trunks, then the ports going
+/// down through each opened container to the components the links belong to.
+fn needed(model: &Model, ls: &[Link]) -> Vec<(PipeId, (Id, Id), Vec<(Id, Id)>)> {
+    let mut out: Vec<(PipeId, (Id, Id), Vec<(Id, Id)>)> = Vec::new();
+    let mut add = |id: PipeId, key: (Id, Id), link: (Id, Id)| match out.iter_mut().find(|(i, _, _)| *i == id) {
+        Some((_, _, links)) => {
+            if !links.contains(&link) {
+                links.push(link)
+            }
+        }
+        None => out.push((id, key, vec![link])),
+    };
+    for l in ls {
+        let (common, a, b) = trunk_of(model, l.from, l.to);
+        add(PipeId::Trunk(common, a, b), (a, b), (l.from, l.to));
+        // Down from each end's standing block to the element itself, a port per level.
+        for (end, stand, far, outgoing) in [(l.from, a, b, true), (l.to, b, a, false)] {
+            let path = model.path(Some(end));
+            let start = path.iter().position(|x| *x == stand).unwrap_or(path.len());
+            for &block in path.iter().skip(start + 1) {
+                let key = if outgoing { (block, far) } else { (far, block) };
+                add(PipeId::Port { block, far, outgoing }, key, (l.from, l.to));
+            }
+        }
+    }
+    out.sort_by_key(|(id, _, _)| match id {
+        PipeId::Trunk(..) => (0, *id),
+        PipeId::Port { .. } => (1, *id),
+    });
     out
 }
 
@@ -772,8 +911,61 @@ fn truncate(s: &str, max: usize) -> String {
     format!("{}…", s.chars().take(max).collect::<String>().trim_end())
 }
 
-/// Route pipes when the view changes, grow and retract them, follow rising platforms, and
-/// keep their labels in place.
+/// A routing grid for each surface in view (the floor and every open platform), with every
+/// pipe already planned on it put back first, so new pipes fit round them.
+fn router<'a>(model: &'a Model, geometry: &'a Geometry, view: &View, placed: &HashMap<PipeId, Placed>) -> Router<'a> {
+    let mut surfs = HashMap::new();
+    let mut surfaces: Vec<Option<Id>> = vec![None];
+    surfaces.extend(view.opened.iter().map(|x| Some(*x)));
+    for s in surfaces {
+        let items: Vec<Rect> = model
+            .children_of(s)
+            .iter()
+            .filter_map(|c| geometry.geos.get(c).map(|g| g.rect()))
+            .collect();
+        let cell = CELL * geometry.surface_scale(s);
+        let bounds = match s {
+            None => {
+                let b = items.iter().copied().reduce(|a, b| a.union(b)).unwrap_or(geometry.root_bounds);
+                Rect::from_center_size(b.center(), b.size() + Vec2::splat(cell * 28.0))
+            }
+            // Keep pipes off a platform's rim.
+            Some(x) => {
+                let r = geometry.geos[&x].rect();
+                Rect::from_center_size(r.center(), r.size() - Vec2::splat(cell * 2.0))
+            }
+        };
+        surfs.insert(s, Surf::new(s, bounds, cell, &items));
+    }
+    let mut router = Router {
+        model,
+        geometry,
+        surfs,
+        taken: HashSet::new(),
+        new_spots: Vec::new(),
+        reserved: HashMap::new(),
+    };
+    let mut earlier: Vec<&Placed> = placed.values().filter(|p| router.surfs.contains_key(&p.surface)).collect();
+    earlier.sort_by_key(|p| p.seq);
+    for p in earlier {
+        router.surfs.get_mut(&p.surface).unwrap().claim(&p.cells);
+        router.taken.extend(p.spots.iter().copied());
+        for r in &p.reserved {
+            router.reserve(p.surface, *r);
+        }
+    }
+    router
+}
+
+/// Paint a tag, returning its image and size in layout units.
+fn paint_tag(painter: &mut Painter, images: &mut Assets<Image>, spans: &[crate::paint::Span]) -> Option<(Handle<Image>, Vec2)> {
+    let painted = painter.paint(spans, 600.0, false)?;
+    let size = painted.size;
+    Some((images.add(painted.image), size))
+}
+
+/// Plan new pipes when the view changes (keeping every pipe already planned exactly where
+/// it is), grow and retract them, and follow rising platforms.
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     mut commands: Commands,
@@ -794,24 +986,25 @@ pub fn update(
 ) {
     let dt = time.delta_secs().min(0.05);
     let model = &diagram.model;
+    let despawn = |commands: &mut Commands, e: Entity, p: &Pipe| {
+        if let Some((t, ..)) = &p.tag {
+            commands.entity(*t).despawn();
+        }
+        if let Some((b, ..)) = &p.port {
+            commands.entity(*b).despawn();
+        }
+        commands.entity(e).despawn();
+    };
 
     if state.resets != view.resets {
         for (e, p) in &pipes {
-            if let Some((t, _, _)) = &p.label {
-                commands.entity(*t).despawn();
-            }
-            for (body, tag) in &p.port_parts {
-                commands.entity(*body).despawn();
-                if let Some((t, _, _)) = tag {
-                    commands.entity(*t).despawn();
-                }
-            }
-            commands.entity(e).despawn();
+            despawn(&mut commands, e, &p);
         }
         state.resets = view.resets;
         state.version = u64::MAX;
         state.instant = view.instant_resets == view.resets;
-        // The old pipes are still in the query until the despawns apply: route afresh next
+        state.placed.clear();
+        // The old pipes are still in the query until the despawns apply: plan afresh next
         // frame rather than touching them again.
         return;
     }
@@ -825,108 +1018,149 @@ pub fn update(
             .unwrap_or_default();
         let ls = links(model, &view.visible, &extra);
         let instant = std::mem::take(&mut state.instant);
-        let routes = route_all(model, &geometry, &view, &ls);
-        let mut kept = HashSet::new();
-        for (_, mut p) in &mut pipes {
-            if let Some(i) = ls.iter().position(|l| (l.from, l.to) == p.key) {
-                if routes[i].0 == p.route && !p.dying {
-                    kept.insert(i);
-                    p.bridges = routes[i].1.clone();
-                    continue;
-                }
-            }
-            p.dying = true;
-            p.grow.target = 0.0;
-            p.delay = 0.0;
-        }
-        for (i, l) in ls.iter().enumerate() {
-            if kept.contains(&i) {
+        let need = needed(model, &ls);
+        let ink = painter.style.tag().0;
+
+        // Plan whatever is new, fitting round everything already planned.
+        let mut router = router(model, &geometry, &view, &state.placed);
+        for (id, _, _) in &need {
+            if state.placed.contains_key(id) {
                 continue;
             }
+            let mut placed = match *id {
+                PipeId::Trunk(surf, a, b) => {
+                    if !router.surfs.contains_key(&surf) {
+                        continue;
+                    }
+                    let mut p = router.trunk(surf, a, b);
+                    let label = trunk_label(model, a, b, &extra);
+                    let painted = (!label.is_empty())
+                        .then(|| paint_tag(&mut painter, &mut images, &[span(format!(" {label} "), 12.5, 500, ink)]))
+                        .flatten();
+                    if let Some((img, size)) = painted {
+                        let size = size * geometry.surface_scale(surf);
+                        if let Some(at) = router.trunk_tag(&p, size) {
+                            let r = Rect::from_center_size(at, size);
+                            router.reserve(surf, r);
+                            p.reserved.push(r);
+                            p.tag = Some((img, size, at));
+                        }
+                    }
+                    p
+                }
+                PipeId::Port { block, far, outgoing } => {
+                    let surf = model.elements[block].parent;
+                    if !router.surfs.contains_key(&surf) {
+                        continue;
+                    }
+                    // The painted font has no arrows, so say it in words.
+                    let dir = if outgoing { "to" } else { "from" };
+                    let spans = [
+                        span(format!("  {dir}  "), 9.5, 400, ink.with_alpha(0.7)),
+                        span(format!("{}  ", model.elements[far].title), 11.0, 600, ink),
+                    ];
+                    let painted = paint_tag(&mut painter, &mut images, &spans);
+                    let k = geometry.surface_scale(surf);
+                    let toward = geometry.geos.get(&far).map_or(Vec2::ZERO, |g| g.center);
+                    let mut p = router.port(block, toward, painted.as_ref().map(|(_, s)| *s * k));
+                    p.tag = match (p.tag.take(), painted) {
+                        (Some((_, _, at)), Some((img, size))) => Some((img, size * k, at)),
+                        _ => None,
+                    };
+                    p
+                }
+            };
+            placed.seq = state.seq;
+            state.seq += 1;
+            state.placed.insert(*id, placed);
+        }
+
+        // Keep the pipes that are still wanted untouched; retire the rest; add the new.
+        let wanted: HashMap<PipeId, &Vec<(Id, Id)>> = need.iter().map(|(id, _, l)| (*id, l)).collect();
+        let mut kept = HashSet::new();
+        for (_, mut p) in &mut pipes {
+            match wanted.get(&p.id) {
+                Some(links) if !p.dying => {
+                    p.links = (*links).clone();
+                    kept.insert(p.id);
+                }
+                _ => {
+                    p.dying = true;
+                    p.grow.target = 0.0;
+                    p.delay = 0.0;
+                }
+            }
+        }
+        let st = theme.style.index() as usize;
+        for (id, key, links) in &need {
+            if kept.contains(id) {
+                continue;
+            }
+            let Some(placed) = state.placed.get(id) else { continue };
             let material = mats.add(PipeMaterial {
                 u: PipeUniform::default(),
             });
             let mesh = meshes.add(tube(&[], false));
-            // Ports: a little jack on the platform and the far end's name beside it.
-            let port_parts = routes[i]
-                .0
-                .ports
-                .iter()
-                .map(|port| {
-                    let st = theme.style.index() as usize;
-                    let (body_mesh, cap_mesh) = if theme.style == Style::Blocky {
-                        (port_assets.cube.clone(), port_assets.cap.clone())
-                    } else {
-                        (port_assets.body.clone(), port_assets.ring.clone())
-                    };
-                    let body = commands
-                        .spawn((Transform::default(), Visibility::Hidden))
-                        .with_children(|c| {
-                            c.spawn((
-                                Mesh3d(body_mesh),
-                                MeshMaterial3d(port_assets.body_mat[st].clone()),
-                                Transform::from_xyz(0.0, 0.5, 0.0),
-                            ));
-                            c.spawn((
-                                Mesh3d(cap_mesh),
-                                MeshMaterial3d(port_assets.ring_mat[st].clone()),
-                                Transform::from_xyz(0.0, 1.0, 0.0),
-                            ));
-                        })
-                        .id();
-                    // The painted font has no arrows, so say it in words.
-                    let dir = if port.outgoing { "to" } else { "from" };
-                    let ink = painter.style.tag().0;
-                    let spans = [
-                        span(format!("  {dir}  "), 9.5, 400, ink.with_alpha(0.7)),
-                        span(format!("{}  ", model.elements[port.far].title), 11.0, 600, ink),
-                    ];
-                    let tag = decal(&mut commands, &mut painter, &mut images, &mut decal_mats, &quad, &spans, 600.0, false, true);
-                    (body, tag)
-                })
-                .collect();
+            let port = placed.port.map(|at| {
+                let (body_mesh, cap_mesh) = if theme.style == Style::Blocky {
+                    (port_assets.cube.clone(), port_assets.cap.clone())
+                } else {
+                    (port_assets.body.clone(), port_assets.ring.clone())
+                };
+                let body = commands
+                    .spawn((Transform::default(), Visibility::Hidden))
+                    .with_children(|c| {
+                        c.spawn((
+                            Mesh3d(body_mesh),
+                            MeshMaterial3d(port_assets.body_mat[st].clone()),
+                            Transform::from_xyz(0.0, 0.5, 0.0),
+                        ));
+                        c.spawn((
+                            Mesh3d(cap_mesh),
+                            MeshMaterial3d(port_assets.ring_mat[st].clone()),
+                            Transform::from_xyz(0.0, 1.0, 0.0),
+                        ));
+                    })
+                    .id();
+                (body, at, placed.surface)
+            });
+            let tag = placed.tag.as_ref().map(|(img, size, at)| {
+                let (e, m) = decal_with(&mut commands, &mut decal_mats, &quad, img.clone(), *size, theme.style, true);
+                (e, m, *size, *at, placed.surface)
+            });
             let mut grow = Spring::new(if instant { 1.0 } else { 0.0 });
             grow.target = 1.0;
-            let label = (!l.label.is_empty() || l.count > 1)
-                .then(|| {
-                    let text = match (l.label.is_empty(), l.count) {
-                        (true, n) => format!("{n} relationships"),
-                        (false, 1) => truncate(&l.label, 40),
-                        (false, n) => format!("{}  +{}", truncate(&l.label, 34), n - 1),
-                    };
-                    let spans = [span(format!(" {text} "), 12.5, 500, painter.style.tag().0)];
-                    decal(&mut commands, &mut painter, &mut images, &mut decal_mats, &quad, &spans, 600.0, false, true)
-                })
-                .flatten();
+            let delay = if instant {
+                0.0
+            } else if view.version <= 2 {
+                0.9
+            } else {
+                // Ports pop up after the platform has risen.
+                0.3 + if matches!(id, PipeId::Port { .. }) { 0.25 } else { 0.0 }
+            };
             commands.spawn((
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(material.clone()),
                 Transform::IDENTITY,
                 Pipe {
-                    key: (l.from, l.to),
-                    from: l.from,
-                    to: l.to,
-                    route: routes[i].0.clone(),
-                    bridges: routes[i].1.clone(),
-                    port_parts,
+                    key: *key,
+                    from: key.0,
+                    to: key.1,
+                    links: links.clone(),
+                    id: *id,
+                    piece: placed.piece.clone(),
+                    bridges: placed.bridges.clone(),
+                    port,
+                    tag,
                     mesh,
                     material,
                     hl: Spring::new(0.0),
                     dim: Spring::new(0.0),
                     grow,
-                    delay: if instant {
-                        0.0
-                    } else if view.version <= 2 {
-                        0.9
-                    } else {
-                        0.3
-                    },
+                    delay,
                     dying: false,
                     built: -1.0,
                     samples: Vec::new(),
-                    label,
-                    label_at: None,
-                    label_scale: 1.0,
                 },
             ));
         }
@@ -937,7 +1171,6 @@ pub fn update(
         Some(Detail::Relation(a, b)) => Some((a, b)),
         _ => None,
     };
-    let two_way: HashSet<(Id, Id)> = current.0.iter().map(|l| (l.from, l.to)).collect();
     for (e, mut p) in &mut pipes {
         if p.delay > 0.0 {
             p.delay -= dt;
@@ -951,105 +1184,47 @@ pub fn update(
         }
         let grow = p.grow.value.clamp(0.0, 1.0);
         if p.dying && grow < 0.01 {
-            if let Some((t, _, _)) = &p.label {
-                commands.entity(*t).despawn();
-            }
-            for (body, tag) in &p.port_parts {
-                commands.entity(*body).despawn();
-                if let Some((t, _, _)) = tag {
-                    commands.entity(*t).despawn();
-                }
-            }
-            commands.entity(e).despawn();
+            despawn(&mut commands, e, &p);
             continue;
         }
         if heights.moving || (grow - p.built).abs() > 1e-4 {
-            let lines: Vec<Vec<(Vec3, f32)>> = p
-                .route
-                .pieces
-                .iter()
-                .map(|piece| centre_line(piece, &p.bridges, &geometry, &heights, grow))
-                .collect();
+            let line = centre_line(&p.piece, &p.bridges, &geometry, &heights, grow);
             if let Some(m) = meshes.get_mut(&p.mesh) {
-                *m = tube(&lines, theme.style == Style::Blocky);
+                *m = tube(&[line.clone()], theme.style == Style::Blocky);
             }
-            p.samples = lines.iter().flatten().map(|(q, _)| *q).collect();
+            p.samples = line.iter().map(|(q, _)| *q).collect();
             p.built = grow;
-            // Lay the tag on the longest straight run. Of a two-way pair, each sits toward
-            // its own end so the two don't overlap.
-            let mut best: Option<(f32, Vec3, f32)> = None;
-            let along = if two_way.contains(&(p.to, p.from)) {
-                if p.from < p.to { 0.3 } else { 0.7 }
-            } else {
-                0.5
-            };
-            for w in p.route.pieces[p.route.outer].windows(2) {
-                if w[0].surface != w[1].surface {
-                    continue;
-                }
-                let len = w[0].p.distance(w[1].p);
-                if best.is_none_or(|(l, _, _)| len > l) {
-                    let s = geometry.surface_scale(w[0].surface);
-                    let mid = w[0].p.lerp(w[1].p, along);
-                    // Just above the pipe, lying flat over it.
-                    let y = heights.top(w[0].surface) + PIPE_R * s * 2.5;
-                    best = Some((len, Vec3::new(mid.x, y, mid.y), s));
-                }
-            }
-            p.label_at = best.map(|(_, at, _)| at);
-            p.label_scale = best.map_or(1.0, |(_, _, s)| s);
         }
-        let from = &model.elements[p.from];
-        let color = neon(from.color).lerp(Vec3::new(0.05, 0.85, 1.0), 0.55);
-        let glow = 2.2;
+        let color = neon(model.elements[p.from].color).lerp(Vec3::new(0.05, 0.85, 1.0), 0.55);
         if let Some(m) = mats.get_mut(&p.material) {
             m.u = PipeUniform {
-                color: color.extend(glow),
+                color: color.extend(2.2),
                 p: Vec4::new(p.hl.value.clamp(0.0, 1.0), p.dim.value.clamp(0.0, 1.0), 16.0, 9.0),
                 q: Vec4::new(theme.style.index(), 0.0, 0.0, 0.0),
             };
         }
-
-        // Ports pop up with the pipe, standing on their platform, tag laid out beyond them.
         let hl = p.hl.value.clamp(0.0, 1.0);
-        for (port, (body, tag)) in p.route.ports.iter().zip(&p.port_parts) {
-            let r = PIPE_R * geometry.surface_scale(port.at.surface);
-            let top = heights.top(port.at.surface);
+        let dim = p.dim.value.clamp(0.0, 1.0);
+
+        // The port pops up out of its platform as its pipe arrives.
+        if let Some((body, at, surf)) = p.port {
+            let r = PIPE_R * geometry.surface_scale(surf);
             let pop = (grow * 1.4 - 0.2).clamp(0.0, 1.0);
-            if let Ok((mut tf, mut vis)) = decals.get_mut(*body) {
-                tf.translation = Vec3::new(port.at.p.x, top, port.at.p.y);
+            if let Ok((mut tf, mut vis)) = decals.get_mut(body) {
+                tf.translation = Vec3::new(at.x, heights.top(surf), at.y);
                 tf.scale = Vec3::new(r * 2.3, r * 2.9 * pop.max(1e-3), r * 2.3);
                 *vis = if pop > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
             }
-            if let Some((t, m, size)) = tag {
-                let k = geometry.surface_scale(port.at.surface);
-                let size = *size * k;
-                let reach = if port.side.x != 0.0 { size.x } else { size.y } * 0.5 + r * 3.0;
-                let at = port.at.p + port.side * reach;
-                let alpha = ((grow - 0.9) / 0.1).clamp(0.0, 1.0) * (1.0 - 0.7 * p.dim.value.clamp(0.0, 1.0));
-                if let Ok((mut tf, mut vis)) = decals.get_mut(*t) {
-                    tf.translation = Vec3::new(at.x, top + r * 0.3, at.y);
-                    tf.scale = Vec3::new(size.x, 1.0, size.y);
-                    *vis = if alpha > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
-                }
-                if let Some(mat) = decal_mats.get_mut(m) {
-                    let t = theme.style.text_tint() * 0.9 + if theme.style == Style::Tron { 0.6 * hl } else { 0.0 };
-                mat.u.tint = Vec4::new(t, t, t * 1.08, alpha);
-                    mat.u.p.y = 0.45 + 0.55 * hl;
-                }
-            }
         }
-
-        // The tag, painted flat over the pipe.
-        if let Some((t, m, size)) = &p.label {
-            let hl = p.hl.value.clamp(0.0, 1.0);
-            let alpha = if grow > 0.95 { (grow - 0.95) / 0.05 } else { 0.0 } * (1.0 - 0.7 * p.dim.value.clamp(0.0, 1.0));
+        // The tag, painted where it was planned to lie.
+        if let Some((t, m, size, at, surf)) = &p.tag {
+            let k = geometry.surface_scale(*surf);
+            let lift = if p.is_trunk() { PIPE_R * k * 2.5 } else { PIPE_R * k * 0.3 };
+            let alpha = ((grow - 0.9) / 0.1).clamp(0.0, 1.0) * (1.0 - 0.7 * dim);
             if let Ok((mut tf, mut vis)) = decals.get_mut(*t) {
-                *vis = if alpha > 0.01 && p.label_at.is_some() { Visibility::Inherited } else { Visibility::Hidden };
-                if let Some(at) = p.label_at {
-                    tf.translation = at;
-                    tf.scale = Vec3::new(size.x, 1.0, size.y) * p.label_scale;
-                }
+                tf.translation = Vec3::new(at.x, heights.top(*surf) + lift, at.y);
+                tf.scale = Vec3::new(size.x, 1.0, size.y);
+                *vis = if alpha > 0.01 { Visibility::Inherited } else { Visibility::Hidden };
             }
             if let Some(mat) = decal_mats.get_mut(m) {
                 let t = theme.style.text_tint() * 0.9 + if theme.style == Style::Tron { 0.6 * hl } else { 0.0 };

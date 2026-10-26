@@ -25,8 +25,13 @@ pub const BG: Color = Color::srgb(0.004, 0.009, 0.018);
 pub const TEXT: Color = Color::srgb(0.94, 0.98, 1.0);
 pub const MUTED: Color = Color::srgba(0.72, 0.9, 1.0, 0.7);
 pub const ACCENT: Color = Color::srgb(0.2, 0.9, 1.0);
-/// Render layer of the flat overlay (labels, tags, detail cards).
+/// Render layer of the flat overlay (detail cards), and an empty one for the UI camera.
 pub const OVERLAY: usize = 1;
+const UI_LAYER: usize = 2;
+
+/// The camera drawing the flat overlay over the 3D view.
+#[derive(Component)]
+pub struct OverlayCamera;
 
 #[derive(Resource)]
 pub struct Diagram {
@@ -185,6 +190,21 @@ pub fn setup(
         Tonemapping::None,
         Msaa::Sample4,
         RenderLayers::layer(OVERLAY),
+        OverlayCamera,
+    ));
+    // The interface draws over the whole window (the panels as well as the 3D view), so it
+    // has a camera of its own that renders nothing else.
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 2,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        bevy::render::view::Hdr,
+        Tonemapping::None,
+        Msaa::Sample4,
+        RenderLayers::layer(UI_LAYER),
         IsDefaultUiCamera,
     ));
     // The floor: a neon grid fading into the dark.
@@ -455,8 +475,17 @@ pub fn pointer(
         let dimmed = emphasis && !connected.contains(&b.id) && !view.opened.contains(&b.id);
         b.dim.target = if dimmed { 1.0 } else { 0.0 };
     }
+    // A hovered pipe lights everything carrying the same relationships (its ports too); a
+    // hovered block lights every pipe carrying one of its relationships.
+    let hovered_links: HashSet<(Id, Id)> = pipes_q
+        .iter()
+        .filter(|(_, p)| Some(p.key) == ptr.hovered_pipe)
+        .flat_map(|(_, p)| p.links.iter().copied())
+        .collect();
     for (_, mut p) in &mut pipes_q {
-        let lit = ptr.hovered_pipe == Some(p.key) || hovered_closed.is_some_and(|h| p.from == h || p.to == h);
+        let lit = ptr.hovered_pipe == Some(p.key)
+            || p.links.iter().any(|l| hovered_links.contains(l))
+            || hovered_closed.is_some_and(|h| p.from == h || p.to == h || p.links.iter().any(|(a, b)| *a == h || *b == h));
         p.hl.target = if lit { 1.0 } else { 0.0 };
         p.dim.target = if emphasis && !lit { 1.0 } else { 0.0 };
     }

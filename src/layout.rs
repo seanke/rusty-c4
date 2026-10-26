@@ -9,15 +9,16 @@ use bevy::math::{Rect, Vec2};
 use crate::model::{Id, Model};
 
 pub const CARD: Vec2 = Vec2::new(320.0, 180.0);
-const GAP_X: f32 = 90.0;
-const GAP_Y: f32 = 125.0;
+// Generous gaps and padding leave room for pipes, ports and their tags between cards.
+const GAP_X: f32 = 140.0;
+const GAP_Y: f32 = 175.0;
 const MAX_ROW: usize = 5;
 /// Spacing for left-to-right layouts: wider between ranks to leave room for labels.
-const GAP_ALONG_H: f32 = 160.0;
-const GAP_ACROSS_H: f32 = 70.0;
+const GAP_ALONG_H: f32 = 230.0;
+const GAP_ACROSS_H: f32 = 120.0;
 const MAX_COL: usize = 4;
-const FRAME_PAD: f32 = 56.0;
-const FRAME_PAD_TOP: f32 = 96.0;
+const FRAME_PAD: f32 = 120.0;
+const FRAME_PAD_TOP: f32 = 160.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {

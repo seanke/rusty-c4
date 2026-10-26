@@ -56,8 +56,22 @@ pub fn decal(
     let painted = painter.paint(spans, width, centered)?;
     let size = painted.size;
     let texture = images.add(painted.image);
-    let (_, bg, edge) = painter.style.tag();
-    let corner = if painter.style == Style::Blocky { 0.08 } else { 0.5 };
+    let (e, material) = decal_with(commands, mats, quad, texture, size, painter.style, pill);
+    Some((e, material, size))
+}
+
+/// A decal for text already painted (`size` in layout units).
+pub fn decal_with(
+    commands: &mut Commands,
+    mats: &mut Assets<DecalMaterial>,
+    quad: &DecalQuad,
+    texture: Handle<Image>,
+    size: Vec2,
+    style: Style,
+    pill: bool,
+) -> (Entity, Handle<DecalMaterial>) {
+    let (_, bg, edge) = style.tag();
+    let corner = if style == Style::Blocky { 0.08 } else { 0.5 };
     let material = mats.add(DecalMaterial {
         u: DecalUniform {
             tint: Vec4::new(1.0, 1.0, 1.0, 0.0),
@@ -70,7 +84,7 @@ pub fn decal(
     let e = commands
         .spawn((Mesh3d(quad.0.clone()), MeshMaterial3d(material.clone()), Transform::default(), Visibility::Hidden))
         .id();
-    Some((e, material, size))
+    (e, material)
 }
 
 fn spawn(

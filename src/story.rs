@@ -113,8 +113,27 @@ pub fn drive(
         pb.framed = true;
         let mut rect: Option<Rect> = None;
         let mut y = 0.0f32;
+        // Frame the deepest end's container (so it opens and shows that end), together with
+        // anything on the same level; ends further out still show, via their ports.
+        let depth = |id: Id| model.path(Some(id)).len();
+        let deepest = steps.iter().flat_map(|s| [s.from, s.to]).map(depth).max().unwrap_or(0);
+        let mut targets: Vec<Id> = Vec::new();
         for s in &steps {
             for id in [s.from, s.to] {
+                let t = if depth(id) == deepest || deepest <= 1 {
+                    id
+                } else {
+                    // A shallower end: frame the container at the deepest end's level instead.
+                    let other = if id == s.from { s.to } else { s.from };
+                    model.path(Some(other)).get(deepest.saturating_sub(2)).copied().unwrap_or(other)
+                };
+                if !targets.contains(&t) {
+                    targets.push(t);
+                }
+            }
+        }
+        for id in targets {
+            {
                 for a in model.path(Some(id)).iter().rev().skip(1).rev() {
                     geometry.ensure_children(model, *a);
                 }
@@ -150,7 +169,7 @@ pub fn drive(
     let pipes_ready = pb
         .current
         .iter()
-        .all(|k| pipes.iter().any(|p| p.key == *k && p.ready()));
+        .all(|k| pipes.iter().any(|p| p.is_trunk() && p.links.contains(k) && p.ready()));
     if settled && pipes_ready {
         let dt = time.delta_secs().min(0.05);
         if pb.t < 1.0 {
@@ -175,8 +194,10 @@ pub fn drive(
         b.hover.target = if now.contains(&b.id) { 1.0 } else { 0.0 };
     }
     for mut p in &mut pipes {
-        p.dim.target = if all.contains(&p.key) { 0.0 } else { 1.0 };
-        p.hl.target = if pb.current.contains(&p.key) { 1.0 } else { 0.0 };
+        let in_story = p.links.iter().any(|l| all.contains(l));
+        let now_playing = p.links.iter().any(|l| pb.current.contains(l));
+        p.dim.target = if in_story { 0.0 } else { 1.0 };
+        p.hl.target = if now_playing { 1.0 } else { 0.0 };
     }
 }
 
@@ -256,7 +277,7 @@ pub fn draw(
     for (i, key) in pb.current.clone().into_iter().enumerate() {
         let Some(&e) = pb.packets.get(i) else { continue };
         let Ok((mut tf, mut vis)) = transforms.get_mut(e) else { continue };
-        let Some(pipe) = pipes.iter().find(|p| p.key == key && p.ready()) else {
+        let Some(pipe) = pipes.iter().find(|p| p.is_trunk() && p.links.contains(&key) && p.ready()) else {
             *vis = Visibility::Hidden;
             continue;
         };

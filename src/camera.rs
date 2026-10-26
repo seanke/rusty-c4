@@ -174,7 +174,8 @@ pub fn input(
     keys: Res<ButtonInput<KeyCode>>,
     code: Res<crate::editor::Code>,
 ) {
-    cam.viewport = window.size();
+    // The 3D view is the window less the source panel, if it's open.
+    cam.viewport = window.size() - Vec2::new(code.split_width(), 0.0);
     cam.cursor = cam.fake_cursor.or(window.cursor_position());
     let anchor = cam.cursor.unwrap_or(cam.viewport / 2.0);
 
