@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arboard = { version = "3.6", default-features = false }
 bevy = "0.18.1"
 cosmic-text = "0.16"
 rfd = "0.17.2"

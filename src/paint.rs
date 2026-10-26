@@ -47,7 +47,7 @@ pub struct Painter {
     fonts: FontSystem,
     cache: SwashCache,
     /// A family for each style (clean sans, handwriting, chunky pixels).
-    families: [Option<String>; 3],
+    families: [Option<String>; 4],
     pub style: Style,
 }
 
@@ -56,7 +56,7 @@ impl Painter {
         // Families with real bold faces: the system's variable SF font renders its heavier
         // weights slanted through this rasteriser.
         let mut db = fontdb::Database::new();
-        let choices: [&[&[&str]]; 3] = [
+        let choices: [&[&[&str]]; 4] = [
             &[
                 &["/System/Library/Fonts/HelveticaNeue.ttc"],
                 &["/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
@@ -74,8 +74,15 @@ impl Painter {
                 &["C:\\Windows\\Fonts\\consola.ttf", "C:\\Windows\\Fonts\\consolab.ttf"],
                 &["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"],
             ],
+            // Technical lettering for blueprints.
+            &[
+                &["/System/Library/Fonts/Avenir Next Condensed.ttc"],
+                &["/System/Library/Fonts/Supplemental/DIN Condensed Bold.ttf"],
+                &["C:\\Windows\\Fonts\\bahnschrift.ttf"],
+                &["/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf"],
+            ],
         ];
-        let mut families: [Option<String>; 3] = [None, None, None];
+        let mut families: [Option<String>; 4] = [None, None, None, None];
         for (i, options) in choices.iter().enumerate() {
             for files in options.iter() {
                 let found: Vec<Vec<u8>> = files.iter().filter_map(|p| std::fs::read(p).ok()).collect();
@@ -128,9 +135,15 @@ impl Painter {
         let first = spans.first()?;
         let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(first.size * texels, first.size * texels * 1.25));
         buffer.set_size(&mut self.fonts, Some(width * texels), None);
+        // Blueprints are lettered in capitals.
+        let texts: Vec<String> = spans
+            .iter()
+            .map(|s| if style == Style::Blueprint { s.text.to_uppercase() } else { s.text.clone() })
+            .collect();
         let attrs: Vec<(&str, Attrs)> = spans
             .iter()
-            .map(|s| {
+            .zip(&texts)
+            .map(|(s, text)| {
                 let c = s.color.to_srgba();
                 let ink = Ink::rgba(
                     (c.red * 255.0) as u8,
@@ -143,7 +156,7 @@ impl Painter {
                     .weight(Weight(s.weight))
                     .color(ink)
                     .metrics(Metrics::new(s.size * texels, s.size * texels * 1.25));
-                (s.text.as_str(), a)
+                (text.as_str(), a)
             })
             .collect();
         let align = if centered { Align::Center } else { Align::Left };

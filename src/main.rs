@@ -6,8 +6,10 @@
 
 mod camera;
 mod detail;
+mod editor;
 mod labels;
 mod layout;
+mod mermaid;
 mod model;
 mod paint;
 mod parser;
@@ -18,6 +20,7 @@ mod script;
 mod story;
 mod theme;
 mod ui;
+mod workspace;
 mod world;
 
 use std::path::PathBuf;
@@ -37,21 +40,28 @@ use scene::{Diagram, Nav, NavQueue, Pointer, Source, BG};
 fn main() {
     let mut source = None;
     let mut style = theme::Style::Tron;
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--example" => source = Some(Source::Example),
+            "--example" => {
+                // `--example mermaid` for the Mermaid one.
+                let mermaid = args.peek().is_some_and(|a| a == "mermaid");
+                if mermaid {
+                    args.next();
+                }
+                source = Some(Source::Example(if mermaid { workspace::Example::Mermaid } else { workspace::Example::Cloud }));
+            }
             "--style" => match args.next().as_deref().and_then(theme::Style::parse) {
                 Some(s) => style = s,
                 None => {
-                    eprintln!("rustyc4: --style takes tron, sketch or blocky");
+                    eprintln!("rustyc4: --style takes tron, sketch, blocky or blueprint");
                     std::process::exit(2);
                 }
             },
             "-h" | "--help" => {
-                println!("usage: rustyc4 [path | --example] [--style tron|sketch|blocky]");
+                println!("usage: rustyc4 [path | --example] [--style tron|sketch|blocky|blueprint]");
                 println!("  path       a .c4 / .likec4 file, or a directory of them");
-                println!("  --example  open the built-in example model");
+                println!("  --example  open the built-in example model (`--example mermaid` for the Mermaid one)");
                 println!("  --style    how it looks (T switches while running)");
                 return;
             }
@@ -92,7 +102,7 @@ fn main() {
         version: 0,
         resets: 0,
         intro: false,
-        restyle: false,
+        keep_view: false,
     })
     .insert_resource(NavQueue(source.map(Nav::Load).into_iter().collect()))
     .init_resource::<ui::Menu>()
@@ -108,19 +118,23 @@ fn main() {
     .init_resource::<pipes::Links>()
     .init_resource::<pipes::PipeState>()
     .init_resource::<story::Playback>()
+    .init_resource::<workspace::Workspace>()
     .insert_resource(theme::Theme { style, version: 0 })
-    .add_systems(Startup, (scene::setup, labels::setup, pipes::setup, ui::spawn, story::setup, story::spawn_ui).chain())
+    .add_systems(Startup, (scene::setup, labels::setup, pipes::setup, ui::spawn, story::setup, story::spawn_ui, editor::setup).chain())
     .add_systems(
         Update,
         (
             (
                 script::run,
+                // The editor takes the keys first when it has focus.
+                editor::input,
                 camera::input,
                 scene::pointer,
                 scene::keyboard,
                 theme::keys,
                 story::ui,
                 scene::watch_files,
+                workspace::live,
                 scene::apply_nav,
                 theme::apply,
                 world::auto_open,
@@ -141,6 +155,7 @@ fn main() {
                 ui::update,
                 ui::menu_buttons,
                 ui::style_buttons,
+                editor::draw,
                 ui::file_drop,
                 ui::dialogs,
                 ui::overlays,

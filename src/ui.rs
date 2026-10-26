@@ -48,6 +48,7 @@ pub enum Action {
     OpenFolder,
     OpenFile,
     Example,
+    MermaidExample,
     Reload,
     Quit,
 }
@@ -159,11 +160,19 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
                         margin: UiRect::top(px(14)),
                         ..default()
                     },
-                    Text::new("or drop a .c4 file or a folder onto this window"),
+                    Text::new("or drop a .c4 or .mmd file, or a folder, onto this window"),
                     font(&fonts, 12.5, FontWeight::NORMAL),
                     TextColor(Color::srgba(0.85, 0.88, 0.95, 0.4)),
                 ));
-                c.spawn(link(&fonts, "Try the example", Action::Example));
+                c.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: px(4),
+                    ..default()
+                })
+                .with_children(|row| {
+                    row.spawn(link(&fonts, "Try the example", Action::Example));
+                    row.spawn(link(&fonts, "Try the Mermaid example", Action::MermaidExample));
+                });
             });
         });
 
@@ -378,7 +387,8 @@ pub fn menu_buttons(
             Action::Style(s) => theme.set(*s),
             Action::OpenFolder => pending.0 = Some(Dialog::Folder),
             Action::OpenFile => pending.0 = Some(Dialog::File),
-            Action::Example => queue.0.push(Nav::Load(Source::Example)),
+            Action::Example => queue.0.push(Nav::Load(Source::Example(crate::workspace::Example::Cloud))),
+            Action::MermaidExample => queue.0.push(Nav::Load(Source::Example(crate::workspace::Example::Mermaid))),
             Action::Reload => {
                 queue.0.push(Nav::Reload);
                 menu.open = false;
@@ -404,7 +414,7 @@ pub fn dialogs(
             .pick_folder(),
         Dialog::File => rfd::FileDialog::new()
             .set_title("Open a LikeC4 file")
-            .add_filter("LikeC4", &["c4", "likec4"])
+            .add_filter("LikeC4 or Mermaid", &["c4", "likec4", "mmd", "mermaid"])
             .pick_file(),
     };
     if let Some(path) = picked {

@@ -1,6 +1,7 @@
-// A relationship pipe in one of three styles (q.x): 0 a glowing neon tube with bright
+// A relationship pipe in one of four styles (q.x): 0 a glowing neon tube with bright
 // pulses; 1 an inked outline on paper with ink dashes flowing; 2 a square redstone line with
-// pixel pulses. `uv.x` is distance along the pipe in pipe radii, `uv.y` goes round it.
+// pixel pulses; 3 a white technical outline on blueprint blue. `uv.x` is distance along the
+// pipe in pipe radii, `uv.y` goes round it.
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::{view, globals}
@@ -31,14 +32,21 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let spacing = pipe.p.z;
     let phase = fract((in.uv.x - globals.time * pipe.p.w) / spacing);
 
-    if style == 1 {
-        // An outlined tube: ink along the silhouette, paper inside, ink dashes flowing.
-        let ink = mix(vec3<f32>(0.1, 0.11, 0.18), vec3<f32>(0.8, 0.18, 0.12), hl);
-        let paper = vec3<f32>(0.97, 0.95, 0.9);
-        let edge = 1.0 - smoothstep(0.28, 0.5, facing);
+    if style == 1 || style == 3 {
+        // An outlined tube: lines along the silhouette, paper inside, dashes flowing. Ink on
+        // paper for the sketch; white on blue for the blueprint.
+        var ink = mix(vec3<f32>(0.1, 0.11, 0.18), vec3<f32>(0.8, 0.18, 0.12), hl);
+        var paper = vec3<f32>(0.97, 0.95, 0.9);
+        var faded = vec3<f32>(0.86, 0.83, 0.77);
+        if style == 3 {
+            ink = mix(vec3<f32>(0.9, 0.95, 1.0), vec3<f32>(1.0, 0.85, 0.3), hl);
+            paper = vec3<f32>(0.012, 0.06, 0.23);
+            faded = vec3<f32>(0.009, 0.06, 0.24);
+        }
+        let edge = 1.0 - smoothstep(0.28, 0.45, facing);
         let dash = step(phase, 0.22) * smoothstep(0.55, 0.75, facing);
         var col = mix(paper, ink, max(edge, dash * 0.85));
-        col = mix(col, vec3<f32>(0.86, 0.83, 0.77), 0.6 * dim);
+        col = mix(col, faded, 0.6 * dim);
         return vec4<f32>(col, 1.0);
     }
     if style == 2 {

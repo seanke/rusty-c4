@@ -1,6 +1,6 @@
-// An extruded element block, in one of three styles (q.w): 0 Tron (near-black body, neon
+// An extruded element block, in one of four styles (q.w): 0 Tron (near-black body, neon
 // edges), 1 Sketch (paper with wobbly ink outlines and hatched sides), 2 Blocky (pixel
-// textured voxels). The mesh puts local top-face coordinates (x, up-the-screen) in `uv` and
+// textured voxels), 3 Blueprint (white linework drawn like walls on a floor plan). The mesh puts local top-face coordinates (x, up-the-screen) in `uv` and
 // (height fraction, face: 0 top / 1 side) in `uv_b`.
 
 #import bevy_pbr::forward_io::VertexOutput
@@ -193,6 +193,50 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             col = mix(col, vec3<f32>(0.02), rim * max(hover, sel) * 0.85);
         }
         col = col * (1.0 - 0.5 * dim);
+        return vec4<f32>(col, 1.0);
+    }
+
+    // --- Blueprint: white technical linework on blue ----------------------------------------
+    if style == 3 {
+        let ink = b.neon.rgb;
+        var col = b.body.rgb;
+        var a_ink = 0.0;
+        let hot = 0.35 * hover + 0.25 * sel;
+        if face < 0.5 {
+            // Drawn like a wall on a plan: an outer line, a thinner inner line, and the space
+            // between them hatched with fine diagonals.
+            let wall = 7.0 * scale;
+            let outer = line(d + lw * 0.6, lw * (1.1 + 0.8 * hot), aa);
+            let inner = line(d + wall, lw * 0.55, aa);
+            let in_wall = step(-wall, d) * step(d, -lw * 1.2);
+            let hc = (local.x + local.y) / (3.0 * scale);
+            let hatch = clamp(0.5 - (abs(fract(hc) - 0.5) - 0.06) / max(fwidth(hc), 1e-4), 0.0, 1.0);
+            a_ink = max(max(outer, inner), hatch * in_wall * 0.55);
+            // An opened block is a drafting sheet with a finer grid.
+            if opened > 0.01 {
+                let s = b.q.y;
+                let g = abs(fract(local / s - 0.5) - 0.5) * s;
+                let gl = max(clamp(0.5 - (g.x - 0.02 * s) / gaa.x, 0.0, 1.0),
+                             clamp(0.5 - (g.y - 0.02 * s) / gaa.y, 0.0, 1.0));
+                let inside = step(d, -wall);
+                a_ink = max(a_ink, gl * 0.16 * opened * inside);
+            }
+            let m = marker(local, half, k, shape);
+            a_ink = max(a_ink, line(m, lw * 0.6, aa) * (1.0 - opened));
+            // A faint wash when hovered or selected.
+            let inside = clamp(0.5 - d / aa, 0.0, 1.0);
+            col = mix(col, ink, 0.08 * hot * inside);
+        } else {
+            // Elevation: crisp top and bottom edges, faint construction lines between.
+            let y = v * h;
+            a_ink = max(line(h - y - lw * 0.5, lw * (1.0 + 0.8 * hot), yaa), line(y - lw * 0.5, lw * 0.8, yaa));
+            let side_x = select(wp.x, wp.z, abs(n.x) > abs(n.z));
+            let tick = abs(fract(side_x / (20.0 * scale) - 0.5) - 0.5) * 20.0 * scale;
+            a_ink = max(a_ink, clamp(0.5 - (tick - lw * 0.2) / max(fwidth(side_x), 1e-4), 0.0, 1.0) * 0.18);
+            col = col * select(0.92, 0.84, abs(n.x) > abs(n.z));
+        }
+        col = mix(col, ink, a_ink);
+        col = mix(col, vec3<f32>(0.009, 0.06, 0.24), 0.55 * dim);
         return vec4<f32>(col, 1.0);
     }
 

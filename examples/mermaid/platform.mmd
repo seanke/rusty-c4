@@ -1,0 +1,40 @@
+%% A blogging platform, as a Mermaid flowchart.
+%% Subgraphs become containers you can zoom into; ((circles)) are people,
+%% [(cylinders)] are stores and >flags] are queues.
+flowchart LR
+  reader((Reader))
+  writer((Writer))
+
+  subgraph web [Web]
+    site[Blog site<br/>Static pages, Astro]
+    editor[Editor<br/>Writing app, React]
+  end
+
+  subgraph api [Platform]
+    gateway{{API Gateway<br/>Auth and routing}}
+    posts[Posts service<br/>Drafts and publishing, Go]
+    media[Media service<br/>Images and video, Rust]
+    search[Search<br/>Full-text index, Meilisearch]
+    mailer[Newsletter<br/>Email digests]
+    subgraph data [Data]
+      db[(Posts DB<br/>PostgreSQL)]
+      blobs[(Media store<br/>S3)]
+      bus>Event bus<br/>NATS]
+    end
+  end
+
+  reader -->|reads| site
+  writer -->|writes| editor
+  site & editor -->|HTTPS| gateway
+  gateway -->|posts| posts
+  gateway -->|uploads| media
+  gateway -->|queries| search
+  posts -->|stores| db
+  media -->|stores| blobs
+  posts -.->|PostPublished| bus
+  bus -.->|reindex| search
+  bus -.->|new post| mailer
+  mailer -->|emails| reader
+
+  classDef people fill:#c9851c
+  class reader,writer people

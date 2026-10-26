@@ -31,6 +31,8 @@ enum Tok {
 struct Token {
     tok: Tok,
     line: usize,
+    /// Column (in characters) where the token starts.
+    col: usize,
 }
 
 fn is_ident_char(c: char) -> bool {
@@ -43,14 +45,17 @@ fn lex(src: &str) -> Vec<Token> {
     let mut out = Vec::new();
     let mut i = 0;
     let mut line = 1;
+    let mut line_start = 0;
     while i < s.len() {
         let c = s[i];
         let start_line = line;
-        let mut push = |tok: Tok| out.push(Token { tok, line: start_line });
+        let col = i - line_start;
+        let mut push = |tok: Tok| out.push(Token { tok, line: start_line, col });
         match c {
             '\n' => {
                 line += 1;
                 i += 1;
+                line_start = i;
             }
             c if c.is_whitespace() => i += 1,
             '/' if at(i + 1) == '/' => {
@@ -63,6 +68,7 @@ fn lex(src: &str) -> Vec<Token> {
                 while i < s.len() && !(s[i] == '*' && at(i + 1) == '/') {
                     if s[i] == '\n' {
                         line += 1;
+                        line_start = i + 1;
                     }
                     i += 1;
                 }
@@ -91,6 +97,7 @@ fn lex(src: &str) -> Vec<Token> {
                     } else {
                         if s[i] == '\n' {
                             line += 1;
+                            line_start = i + 1;
                         }
                         text.push(s[i]);
                     }
@@ -175,55 +182,90 @@ fn lex(src: &str) -> Vec<Token> {
     out
 }
 
+/// A problem found in a source file, with where it is and (often) a likely fix.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Diagnostic {
+    pub file: String,
+    /// 1-based line; 0-based column and length, in characters.
+    pub line: usize,
+    pub col: usize,
+    pub len: usize,
+    pub message: String,
+    /// Text to put in place of the marked range.
+    pub fix: Option<String>,
+    /// An error (something is broken) rather than a warning (something was ignored).
+    pub error: bool,
+}
+
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}: {}", self.file, self.line, self.message)
+    }
+}
+
+/// Where a name was written: file, line, column.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct At {
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+}
+
 #[derive(Default)]
-struct RawElement {
-    kind: String,
-    title: Option<String>,
-    description: Option<String>,
-    technology: Option<String>,
-    style: Style,
-    declared: bool,
+pub(crate) struct RawElement {
+    pub kind: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub technology: Option<String>,
+    pub style: Style,
+    pub declared: bool,
 }
 
-struct RawRelation {
-    scope: String,
-    source: Option<String>,
-    target: String,
-    title: String,
-    technology: String,
-    location: String,
+pub(crate) struct RawRelation {
+    pub scope: String,
+    pub source: Option<String>,
+    pub target: String,
+    pub title: String,
+    pub technology: String,
+    pub source_at: Option<At>,
+    pub target_at: At,
 }
 
 #[derive(Default)]
-struct Builder {
-    kinds: HashMap<String, Style>,
-    colors: HashMap<String, [f32; 3]>,
-    elements: HashMap<String, RawElement>,
-    order: Vec<String>,
-    relations: Vec<RawRelation>,
-    views: Vec<RawView>,
-    warnings: Vec<String>,
+pub(crate) struct Builder {
+    pub kinds: HashMap<String, Style>,
+    pub colors: HashMap<String, [f32; 3]>,
+    pub elements: HashMap<String, RawElement>,
+    pub order: Vec<String>,
+    pub relations: Vec<RawRelation>,
+    pub views: Vec<RawView>,
+    pub diagnostics: Vec<Diagnostic>,
+    /// Element kinds as written, to check against the specification.
+    pub kind_uses: Vec<(String, At)>,
+    /// Sequence-diagram participants, made into elements unless they name existing ones.
+    pub participants: Vec<(String, String, bool)>,
 }
 
-struct RawStep {
-    from: String,
-    to: String,
-    title: String,
-    technology: String,
-    backward: bool,
-    stage: usize,
-    location: String,
+pub(crate) struct RawStep {
+    pub from: String,
+    pub to: String,
+    pub title: String,
+    pub technology: String,
+    pub backward: bool,
+    pub stage: usize,
+    pub from_at: At,
+    pub to_at: At,
 }
 
-struct RawView {
-    name: String,
-    title: Option<String>,
-    description: String,
-    steps: Vec<RawStep>,
+pub(crate) struct RawView {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: String,
+    pub steps: Vec<RawStep>,
 }
 
 impl Builder {
-    fn element(&mut self, fqn: &str) -> &mut RawElement {
+    pub fn element(&mut self, fqn: &str) -> &mut RawElement {
         if !self.elements.contains_key(fqn) {
             self.order.push(fqn.to_string());
         }
@@ -260,6 +302,16 @@ impl Parser<'_> {
 
     fn line(&self) -> usize {
         self.toks.get(self.pos).map(|t| t.line).unwrap_or(0)
+    }
+
+    /// Where the current token is.
+    fn at(&self) -> At {
+        let t = self.toks.get(self.pos);
+        At {
+            file: self.file.clone(),
+            line: t.map_or(0, |t| t.line),
+            col: t.map_or(0, |t| t.col),
+        }
     }
 
     fn next(&mut self) -> Option<Tok> {
@@ -431,8 +483,10 @@ impl Parser<'_> {
                     *stage += 1;
                 }
                 Tok::Ident(src) if matches!(self.peek(1), Some(Tok::Arrow | Tok::BackArrow)) => {
+                    let src_at = self.at();
                     self.pos += 1;
                     let backward = self.next() == Some(Tok::BackArrow);
+                    let dst_at = self.at();
                     let Some(dst) = self.ident() else {
                         self.skip_line(line);
                         continue;
@@ -452,7 +506,11 @@ impl Parser<'_> {
                             }
                         }
                     }
-                    let (from, to) = if backward { (dst, src) } else { (src, dst) };
+                    let ((from, from_at), (to, to_at)) = if backward {
+                        ((dst, dst_at), (src, src_at))
+                    } else {
+                        ((src, src_at), (dst, dst_at))
+                    };
                     view.steps.push(RawStep {
                         from,
                         to,
@@ -460,7 +518,8 @@ impl Parser<'_> {
                         technology,
                         backward,
                         stage: *stage,
-                        location: format!("{}:{}", self.file, line),
+                        from_at,
+                        to_at,
                     });
                     if !parallel {
                         *stage += 1;
@@ -550,9 +609,9 @@ impl Parser<'_> {
                     self.pos += 1;
                     return;
                 }
-                Tok::Arrow | Tok::ArrowOpen | Tok::BiArrow => self.parse_relation(scope, None),
+                Tok::Arrow | Tok::ArrowOpen | Tok::BiArrow => self.parse_relation(scope, None, None),
                 Tok::Dot if matches!(self.peek(1), Some(Tok::Ident(_))) => {
-                    self.parse_relation(scope, None)
+                    self.parse_relation(scope, None, None)
                 }
                 Tok::LBrace => {
                     self.pos += 1;
@@ -562,15 +621,21 @@ impl Parser<'_> {
                     let next = self.peek(1).cloned();
                     match next {
                         Some(Tok::Arrow | Tok::ArrowOpen | Tok::BiArrow) => {
+                            let at = self.at();
                             self.pos += 1;
-                            self.parse_relation(scope, Some(name));
+                            self.parse_relation(scope, Some(name), Some(at));
                         }
                         Some(Tok::Dot) if matches!(self.peek(2), Some(Tok::Ident(_))) => {
+                            let at = self.at();
                             self.pos += 1;
-                            self.parse_relation(scope, Some(name));
+                            self.parse_relation(scope, Some(name), Some(at));
                         }
                         Some(Tok::Eq) => {
                             self.pos += 2;
+                            let kind_at = self.at();
+                            if let Some(Tok::Ident(k)) = self.peek(0) {
+                                self.b.kind_uses.push((k.clone(), kind_at));
+                            }
                             match self.ident() {
                                 Some(kind) => self.parse_element(scope, &name, &kind),
                                 None => self.skip_line(line),
@@ -600,6 +665,8 @@ impl Parser<'_> {
                             self.parse_property(scope, &name, line);
                         }
                         Some(Tok::Ident(el_name)) => {
+                            let kind_at = self.at();
+                            self.b.kind_uses.push((name.clone(), kind_at));
                             self.pos += 2;
                             self.parse_element(scope, &el_name, &name);
                         }
@@ -674,7 +741,7 @@ impl Parser<'_> {
         }
     }
 
-    fn parse_relation(&mut self, scope: &str, source: Option<String>) {
+    fn parse_relation(&mut self, scope: &str, source: Option<String>, source_at: Option<At>) {
         let line = self.line();
         let bidir = match self.next() {
             Some(Tok::BiArrow) => true,
@@ -691,6 +758,7 @@ impl Parser<'_> {
             }
             _ => false,
         };
+        let target_at = self.at();
         let Some(target) = self.ident() else {
             self.skip_line(line);
             return;
@@ -718,14 +786,14 @@ impl Parser<'_> {
                 }
             }
         }
-        let location = format!("{}:{}", self.file, line);
         let rel = RawRelation {
             scope: scope.to_string(),
             source: source.clone(),
             target: target.clone(),
             title: title.clone(),
             technology: technology.clone(),
-            location: location.clone(),
+            source_at: source_at.clone(),
+            target_at: target_at.clone(),
         };
         self.b.relations.push(rel);
         if bidir {
@@ -736,7 +804,8 @@ impl Parser<'_> {
                 target: source.unwrap_or_else(|| "this".into()),
                 title,
                 technology,
-                location,
+                source_at: Some(target_at.clone()),
+                target_at: source_at.unwrap_or(target_at),
             });
         }
     }
@@ -750,8 +819,67 @@ fn parent_fqn(fqn: &str) -> &str {
     fqn.rsplit_once('.').map(|(p, _)| p).unwrap_or("")
 }
 
-fn finish(b: Builder) -> (Model, Vec<String>) {
-    let mut warnings = b.warnings;
+/// Edit distance between two strings (case-insensitive).
+fn distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.to_lowercase().chars().collect();
+    let b: Vec<char> = b.to_lowercase().chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        let mut cur = vec![i; b.len() + 1];
+        for j in 1..=b.len() {
+            let cost = (a[i - 1] != b[j - 1]) as usize;
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// The closest of `candidates` to `text`, if it is close enough to be a likely typo.
+pub fn suggest<'a>(text: &str, candidates: impl Iterator<Item = &'a str>) -> Option<String> {
+    let limit = (text.chars().count() / 3).max(1);
+    candidates
+        .filter(|c| *c != text)
+        .map(|c| (distance(text, c), c))
+        .filter(|(d, _)| *d <= limit)
+        .min_by_key(|(d, c)| (*d, c.len()))
+        .map(|(_, c)| c.to_string())
+}
+
+fn diag(at: &At, len: usize, message: String, fix: Option<String>, error: bool) -> Diagnostic {
+    Diagnostic {
+        file: at.file.clone(),
+        line: at.line,
+        col: at.col,
+        len,
+        message,
+        fix,
+        error,
+    }
+}
+
+fn finish(mut b: Builder) -> (Model, Vec<Diagnostic>) {
+    let mut warnings = std::mem::take(&mut b.diagnostics);
+    // Sequence-diagram participants that name nothing in the model become elements.
+    {
+        let declared: Vec<String> = b.order.iter().filter(|f| b.elements[f.as_str()].declared).cloned().collect();
+        for (id, title, actor) in std::mem::take(&mut b.participants) {
+            let known = declared.iter().any(|f| *f == id || f.rsplit('.').next() == Some(id.as_str()));
+            if !known {
+                let e = b.element(&id);
+                if !e.declared {
+                    e.declared = true;
+                    e.kind = if actor { "actor".into() } else { "participant".into() };
+                    e.title = Some(title);
+                    if actor {
+                        e.style.shape = Some(Shape::Person);
+                        e.style.color = Some("amber".into());
+                    }
+                }
+            }
+        }
+    }
+    let b = b;
     let declared: HashSet<&str> = b
         .order
         .iter()
@@ -763,7 +891,15 @@ fn finish(b: Builder) -> (Model, Vec<String>) {
     for fqn in &b.order {
         let raw = &b.elements[fqn];
         if !raw.declared {
-            warnings.push(format!("`extend {fqn}`: no element named `{fqn}`"));
+            warnings.push(Diagnostic {
+                file: String::new(),
+                line: 0,
+                col: 0,
+                len: 0,
+                message: format!("`extend {fqn}`: no element named `{fqn}`"),
+                fix: None,
+                error: true,
+            });
             continue;
         }
         let kind_style = b.kinds.get(&raw.kind).cloned().unwrap_or_default();
@@ -851,6 +987,22 @@ fn finish(b: Builder) -> (Model, Vec<String>) {
         model.by_fqn.get(&full).copied()
     };
 
+    // An unknown name: say so, and suggest the nearest real one (full names for dotted
+    // references, short names where those are unique).
+    let unknown = |text: &str, at: &At| {
+        let shorts = by_short.iter().filter(|(_, v)| v.len() == 1).map(|(k, _)| *k);
+        let fix = if text.contains('.') {
+            suggest(text, declared.iter().copied())
+        } else {
+            suggest(text, shorts.chain(declared.iter().copied()))
+        };
+        let message = match &fix {
+            Some(f) => format!("can't find `{text}`; did you mean `{f}`?"),
+            None => format!("can't find `{text}`"),
+        };
+        diag(at, text.chars().count(), message, fix, true)
+    };
+
     let mut relations = Vec::new();
     for r in &b.relations {
         let src_text = r.source.as_deref().unwrap_or("this");
@@ -863,8 +1015,22 @@ fn finish(b: Builder) -> (Model, Vec<String>) {
                 title: tidy(&r.title),
                 technology: tidy(&r.technology),
             }),
-            (None, _) => warnings.push(format!("{}: can't resolve `{src_text}`", r.location)),
-            (_, None) => warnings.push(format!("{}: can't resolve `{}`", r.location, r.target)),
+            (None, _) => warnings.push(unknown(src_text, r.source_at.as_ref().unwrap_or(&r.target_at))),
+            (_, None) => warnings.push(unknown(&r.target, &r.target_at)),
+        }
+    }
+
+    // Element kinds that the specification doesn't declare.
+    if !b.kinds.is_empty() {
+        for (kind, at) in &b.kind_uses {
+            if !b.kinds.contains_key(kind) {
+                let fix = suggest(kind, b.kinds.keys().map(|k| k.as_str()));
+                let message = match &fix {
+                    Some(f) => format!("unknown element kind `{kind}`; did you mean `{f}`?"),
+                    None => format!("unknown element kind `{kind}`"),
+                };
+                warnings.push(diag(at, kind.chars().count(), message, fix, false));
+            }
         }
     }
     model.relations = relations;
@@ -881,8 +1047,8 @@ fn finish(b: Builder) -> (Model, Vec<String>) {
                     backward: st.backward,
                     stage: st.stage,
                 }),
-                (None, _) => warnings.push(format!("{}: can't resolve `{}`", st.location, st.from)),
-                (_, None) => warnings.push(format!("{}: can't resolve `{}`", st.location, st.to)),
+                (None, _) => warnings.push(unknown(&st.from, &st.from_at)),
+                (_, None) => warnings.push(unknown(&st.to, &st.to_at)),
             }
         }
         if !steps.is_empty() {
@@ -912,11 +1078,55 @@ fn finish(b: Builder) -> (Model, Vec<String>) {
     (model, warnings)
 }
 
-pub fn parse_sources(sources: &[(String, String)]) -> (Model, Vec<String>) {
+/// Whether a file is Mermaid rather than LikeC4, by its name.
+pub fn is_mermaid(name: &str) -> bool {
+    name.ends_with(".mmd") || name.ends_with(".mermaid")
+}
+
+/// Unmatched braces, which otherwise quietly swallow the rest of a file.
+fn check_braces(file: &str, toks: &[Token], out: &mut Vec<Diagnostic>) {
+    let mut open: Vec<&Token> = Vec::new();
+    for t in toks {
+        match t.tok {
+            Tok::LBrace => open.push(t),
+            Tok::RBrace if open.pop().is_none() => out.push(Diagnostic {
+                file: file.to_string(),
+                line: t.line,
+                col: t.col,
+                len: 1,
+                message: "`}` without a matching `{`".into(),
+                fix: None,
+                error: true,
+            }),
+            _ => {}
+        }
+    }
+    for t in open {
+        out.push(Diagnostic {
+            file: file.to_string(),
+            line: t.line,
+            col: t.col,
+            len: 1,
+            message: "`{` is never closed".into(),
+            fix: None,
+            error: true,
+        });
+    }
+}
+
+/// Parse a set of files (name, text) into one model. Names ending in `.mmd` or `.mermaid`
+/// are read as Mermaid; everything else as LikeC4.
+pub fn parse_sources(sources: &[(String, String)]) -> (Model, Vec<Diagnostic>) {
     let mut b = Builder::default();
     for (file, src) in sources {
+        if is_mermaid(file) {
+            crate::mermaid::parse(file, src, &mut b);
+            continue;
+        }
+        let toks = lex(src);
+        check_braces(file, &toks, &mut b.diagnostics);
         let mut p = Parser {
-            toks: lex(src),
+            toks,
             pos: 0,
             file: file.clone(),
             b: &mut b,
@@ -926,7 +1136,7 @@ pub fn parse_sources(sources: &[(String, String)]) -> (Model, Vec<String>) {
     finish(b)
 }
 
-/// All `.c4` / `.likec4` files under `path` (or `path` itself if it is a file).
+/// All `.c4`, `.likec4`, `.mmd` and `.mermaid` files under `path` (or `path` itself).
 pub fn source_files(path: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -938,7 +1148,7 @@ pub fn source_files(path: &Path) -> Vec<PathBuf> {
                 if !name.starts_with('.') && name != "node_modules" && name != "target" {
                     walk(&p, out);
                 }
-            } else if name.ends_with(".c4") || name.ends_with(".likec4") {
+            } else if name.ends_with(".c4") || name.ends_with(".likec4") || is_mermaid(&name) {
                 out.push(p);
             }
         }
@@ -952,23 +1162,38 @@ pub fn source_files(path: &Path) -> Vec<PathBuf> {
     out
 }
 
-pub fn load(path: &Path) -> Result<(Model, Vec<String>), String> {
+/// Read every source file under `path`: (path relative to it, absolute path, text).
+pub fn read_sources(path: &Path) -> Result<Vec<(String, PathBuf, String)>, String> {
     let files = source_files(path);
     if files.is_empty() {
-        return Err(format!("no .c4 or .likec4 files found at {}", path.display()));
+        return Err(format!("no .c4, .likec4 or .mmd files found at {}", path.display()));
     }
-    let mut sources = Vec::new();
+    let root = if path.is_file() { path.parent().unwrap_or(path) } else { path };
+    let mut out = Vec::new();
     for f in files {
-        let src = std::fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
-        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
-        sources.push((name, src));
+        let text = std::fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+        let rel = f
+            .strip_prefix(root)
+            .unwrap_or(&f)
+            .to_string_lossy()
+            .replace('\\', "/");
+        out.push((rel, f, text));
     }
-    Ok(parse_sources(&sources))
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suggests_fixes_for_typos() {
+        let src = "specification { element system }\nmodel {\n  shop = system { gateway = sytem }\n  x = system\n  x -> shop.gatway\n}";
+        let (_, d) = parse_sources(&[("t.c4".into(), src.into())]);
+        let fixes: Vec<_> = d.iter().map(|d| (d.line, d.col, d.len, d.fix.clone())).collect();
+        assert!(fixes.contains(&(3, 28, 5, Some("system".into()))), "{d:?}");
+        assert!(fixes.contains(&(5, 7, 11, Some("shop.gateway".into()))), "{d:?}");
+    }
 
     #[test]
     fn parses_dynamic_views() {

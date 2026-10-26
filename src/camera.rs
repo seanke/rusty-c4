@@ -172,6 +172,7 @@ pub fn input(
     scroll: Res<AccumulatedMouseScroll>,
     mut pinch: MessageReader<PinchGesture>,
     keys: Res<ButtonInput<KeyCode>>,
+    code: Res<crate::editor::Code>,
 ) {
     cam.viewport = window.size();
     cam.cursor = cam.fake_cursor.or(window.cursor_position());
@@ -199,7 +200,9 @@ pub fn input(
             cam.zoom_at(anchor, (-g.0 * 1.6).exp());
         }
     }
-    let step = if keys.pressed(KeyCode::Equal) {
+    let step = if code.captures_keys() {
+        None
+    } else if keys.pressed(KeyCode::Equal) {
         Some(0.97)
     } else if keys.pressed(KeyCode::Minus) {
         Some(1.03)

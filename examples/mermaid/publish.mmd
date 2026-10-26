@@ -1,0 +1,23 @@
+%% Publishing a post, as a Mermaid sequence diagram. It plays as a dynamic view:
+%% participants are matched to the flowchart's nodes by name.
+sequenceDiagram
+  title Publishing a post
+  actor writer as Writer
+  participant editor as Editor
+  participant gateway as API Gateway
+  participant posts as Posts service
+
+  writer->>editor: Hit publish
+  editor->>+gateway: POST /posts
+  gateway->>+posts: Publish draft
+  posts->>db: Save post
+  posts-->>-gateway: 201 Created
+  gateway-->>-editor: Post URL
+  par Tell everyone
+    posts-)bus: PostPublished
+  and
+    editor-)writer: Published!
+  end
+  bus-)search: Reindex
+  bus-)mailer: New post
+  mailer-)reader: Newsletter

@@ -180,11 +180,12 @@ pub fn drive(
     }
 }
 
-/// The pulse's look in each style: a glowing ball, a dot of ink, a block of redstone.
+/// The pulse's look in each style: a glowing ball, a dot of ink, a block of redstone, a
+/// yellow marker dot.
 #[derive(Resource)]
 pub struct PacketAssets {
-    mesh: [Handle<Mesh>; 3],
-    material: [Handle<StandardMaterial>; 3],
+    mesh: [Handle<Mesh>; 4],
+    material: [Handle<StandardMaterial>; 4],
 }
 
 pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
@@ -196,7 +197,7 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
         ..default()
     };
     commands.insert_resource(PacketAssets {
-        mesh: [ball.clone(), ball, cube],
+        mesh: [ball.clone(), ball.clone(), cube, ball],
         material: [
             mats.add(StandardMaterial {
                 base_color: Color::BLACK,
@@ -205,6 +206,7 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
             }),
             mats.add(flat(Color::srgb(0.8, 0.16, 0.1))),
             mats.add(flat(Color::srgb(1.0, 0.2, 0.1))),
+            mats.add(flat(Color::srgb(1.0, 0.85, 0.3))),
         ],
     });
 }

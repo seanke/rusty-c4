@@ -15,7 +15,8 @@ use bevy::{
 
 use crate::camera::Cam;
 use crate::model::{Id, Model};
-use crate::parser;
+use crate::parser::{self, Diagnostic};
+use crate::workspace::{Example, SourceFile, Workspace};
 use crate::pipes::{self, Links, Pipe};
 use crate::render::{FloorMaterial, FloorUniform};
 use crate::world::{self, Block, Geometry, Heights, View};
@@ -30,7 +31,7 @@ pub const OVERLAY: usize = 1;
 #[derive(Resource)]
 pub struct Diagram {
     pub model: Model,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Diagnostic>,
     pub path: Option<PathBuf>,
     /// A model (from a path or the built-in example) is open, rather than the welcome screen.
     pub loaded: bool,
@@ -44,8 +45,9 @@ pub struct Diagram {
     pub resets: u64,
     /// The next rebuild should play the opening animation.
     pub intro: bool,
-    /// The next rebuild is only a change of style: keep the camera where it is.
-    pub restyle: bool,
+    /// The next rebuild should keep the camera and the open containers where they are (a
+    /// change of style, or of the source).
+    pub keep_view: bool,
 }
 
 /// Something opened up to show everything known about it.
@@ -56,12 +58,9 @@ pub enum Detail {
     Relation(Id, Id),
 }
 
-/// The model bundled for `--example` and the welcome screen's "try the example".
-pub const EXAMPLE: &str = include_str!("../examples/cloud.c4");
-
 pub enum Source {
     Path(PathBuf),
-    Example,
+    Example(Example),
 }
 
 pub enum Nav {
@@ -73,7 +72,10 @@ pub enum Nav {
     Out,
     Detail(Option<Detail>),
     Fit,
+    /// Re-read the files from disk (those not being edited) and rebuild.
     Reload,
+    /// Rebuild from the files as edited.
+    Reparse,
 }
 
 #[derive(Resource, Default)]
@@ -224,21 +226,45 @@ pub fn apply_nav(
     view: Res<View>,
     mut geometry: ResMut<Geometry>,
     mut watch: ResMut<Watch>,
+    mut ws: ResMut<Workspace>,
 ) {
     for nav in std::mem::take(&mut queue.0) {
         match nav {
             Nav::Load(source) => {
-                let loaded = match &source {
-                    Source::Path(p) => parser::load(p),
-                    Source::Example => Ok(parser::parse_sources(&[("example.c4".into(), EXAMPLE.into())])),
+                let files = match &source {
+                    Source::Path(p) => parser::read_sources(p).map(|files| {
+                        files
+                            .into_iter()
+                            .map(|(rel, path, text)| SourceFile {
+                                rel,
+                                path: Some(path),
+                                saved: text.clone(),
+                                text,
+                                rev: 0,
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                    Source::Example(e) => Ok(e
+                        .files()
+                        .into_iter()
+                        .map(|(rel, text)| SourceFile {
+                            rel: rel.into(),
+                            path: None,
+                            text: text.into(),
+                            saved: text.into(),
+                            rev: 0,
+                        })
+                        .collect()),
                 };
-                match loaded {
-                    Ok((model, warnings)) => {
+                match files {
+                    Ok(files) => {
+                        ws.set(files);
+                        let (model, warnings) = parser::parse_sources(&ws.sources());
                         diagram.model = model;
                         diagram.warnings = warnings;
                         diagram.path = match source {
                             Source::Path(p) => Some(p),
-                            Source::Example => None,
+                            Source::Example(_) => None,
                         };
                         watch.stamp = diagram.path.as_ref().and_then(latest_mtime);
                         diagram.loaded = true;
@@ -290,21 +316,60 @@ pub fn apply_nav(
                 diagram.version += 1;
             }
             Nav::Fit => fit_root(&mut cam, &geometry),
-            Nav::Reload => {
-                let Some(path) = diagram.path.clone() else { continue };
-                match parser::load(&path) {
-                    Ok((model, warnings)) => {
-                        diagram.detail = None;
-                        diagram.model = model;
-                        diagram.warnings = warnings;
-                        diagram.resets += 1;
-                        diagram.version += 1;
-                    }
-                    Err(e) => {
-                        diagram.warnings = vec![format!("reload failed: {e}")];
-                        diagram.version += 1;
+            Nav::Reload | Nav::Reparse => {
+                if matches!(nav, Nav::Reload) {
+                    let Some(path) = diagram.path.clone() else { continue };
+                    // Pick up changes on disk, except in files with unsaved edits.
+                    match parser::read_sources(&path) {
+                        Ok(found) => {
+                            let mut files = Vec::new();
+                            for (rel, path, text) in found {
+                                match ws.files.iter_mut().position(|f| f.rel == rel) {
+                                    Some(i) => {
+                                        let mut f = std::mem::replace(
+                                            &mut ws.files[i],
+                                            SourceFile {
+                                                rel: String::new(),
+                                                path: None,
+                                                text: String::new(),
+                                                saved: String::new(),
+                                                rev: 0,
+                                            },
+                                        );
+                                        if !f.dirty() && f.text != text {
+                                            f.text = text.clone();
+                                            f.rev += 1;
+                                        }
+                                        f.saved = text;
+                                        files.push(f);
+                                    }
+                                    None => files.push(SourceFile {
+                                        rel,
+                                        path: Some(path),
+                                        saved: text.clone(),
+                                        text,
+                                        rev: 1,
+                                    }),
+                                }
+                            }
+                            let active = ws.files.get(ws.active).map(|f| f.rel.clone());
+                            ws.files = files;
+                            ws.active = active.and_then(|a| ws.files.iter().position(|f| f.rel == a)).unwrap_or(0);
+                        }
+                        Err(e) => {
+                            diagram.error = Some(format!("reload failed: {e}"));
+                            diagram.version += 1;
+                            continue;
+                        }
                     }
                 }
+                let (model, warnings) = parser::parse_sources(&ws.sources());
+                diagram.detail = None;
+                diagram.model = model;
+                diagram.warnings = warnings;
+                diagram.keep_view = true;
+                diagram.resets += 1;
+                diagram.version += 1;
             }
         }
     }
@@ -474,12 +539,13 @@ fn click(queue: &mut NavQueue, diagram: &Diagram, hit: Option<Hit>) {
 
 pub fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
+    code: Res<crate::editor::Code>,
     diagram: Res<Diagram>,
     mut menu: ResMut<crate::ui::Menu>,
     mut queue: ResMut<NavQueue>,
     mut playback: ResMut<crate::story::Playback>,
 ) {
-    if !diagram.loaded {
+    if !diagram.loaded || code.captures_keys() {
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {

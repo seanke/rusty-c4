@@ -128,6 +128,11 @@ pub struct View {
     pub version: u64,
     pub resets: u64,
     synced: u64,
+    /// The opened blocks by name, so a rebuilt model can reopen the same ones.
+    opened_fqns: Vec<String>,
+    /// The last rebuild that kept the view (so pipes and blocks appear at once, without
+    /// growing in): its `resets` value.
+    pub instant_resets: u64,
 }
 
 #[derive(Component)]
@@ -247,6 +252,7 @@ fn prism(size: Vec2, radius: f32) -> Mesh {
 fn corner_radius(style: Style, scale: f32) -> f32 {
     match style {
         Style::Blocky => 0.3 * scale,
+        Style::Blueprint => 3.0 * scale,
         _ => 16.0 * scale,
     }
 }
@@ -301,6 +307,10 @@ pub fn auto_open(
         for &id in &open {
             geometry.ensure_children(model, id);
         }
+        let mut fqns: Vec<(usize, String)> =
+            open.iter().map(|id| (model.path(Some(*id)).len(), model.elements[*id].fqn.clone())).collect();
+        fqns.sort();
+        view.opened_fqns = fqns.into_iter().map(|(_, f)| f).collect();
         view.opened = open;
         view.version += 1;
     }
@@ -326,7 +336,7 @@ pub fn sync_view(
         return;
     }
     let intro = std::mem::take(&mut diagram.intro);
-    let restyle = reset && std::mem::take(&mut diagram.restyle);
+    let keep_view = reset && std::mem::take(&mut diagram.keep_view);
     let model = &diagram.model;
     if reset {
         for (e, _) in &blocks {
@@ -336,11 +346,22 @@ pub fn sync_view(
         let aspect = cam.viewport.x / cam.viewport.y.max(1.0);
         geometry.reset(model, aspect);
         view.opened.clear();
+        // Rebuilding in place (new style, edited source): reopen what was open, by name.
+        if keep_view {
+            view.instant_resets = diagram.resets;
+            for fqn in view.opened_fqns.clone() {
+                let Some(&id) = model.by_fqn.get(&fqn) else { continue };
+                if model.elements[id].parent.is_none_or(|p| view.opened.contains(&p)) {
+                    geometry.ensure_children(model, id);
+                    view.opened.insert(id);
+                }
+            }
+        }
         view.resets = diagram.resets;
         view.version += 1;
         let r = geometry.root_bounds;
         // A change of style rebuilds the world in place; only a new model refits the view.
-        if !restyle {
+        if !keep_view {
             cam.fit(Vec3::new(r.center().x, 0.0, r.center().y), r.size() + Vec2::splat(120.0), true);
         }
     }
@@ -518,6 +539,11 @@ pub fn animate(
             ),
             // The colour itself, a touch brighter, as the block's material.
             Style::Blocky => (Vec3::ZERO, lin(base.mix(&Color::WHITE, 0.12))),
+            // White linework (with a hint of the colour) on blueprint blue.
+            Style::Blueprint => (
+                lin(Color::srgb(0.95, 0.97, 1.0).mix(&base, 0.18)).truncate(),
+                lin(Style::Blueprint.background().mix(&Color::WHITE, 0.05)),
+            ),
         };
         if let Some(m) = mats.get_mut(&b.material) {
             m.u = BlockUniform {

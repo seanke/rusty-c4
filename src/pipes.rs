@@ -100,6 +100,8 @@ pub struct PipeState {
     version: u64,
     resets: u64,
     story: u64,
+    /// The next routing follows an in-place rebuild: show the pipes at once.
+    instant: bool,
 }
 
 impl Pipe {
@@ -724,8 +726,8 @@ pub struct PortAssets {
     ring: Handle<Mesh>,
     cube: Handle<Mesh>,
     cap: Handle<Mesh>,
-    body_mat: [Handle<StandardMaterial>; 3],
-    ring_mat: [Handle<StandardMaterial>; 3],
+    body_mat: [Handle<StandardMaterial>; 4],
+    ring_mat: [Handle<StandardMaterial>; 4],
 }
 
 pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
@@ -748,6 +750,7 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
             }),
             mats.add(flat(Color::srgb(0.97, 0.95, 0.9))),
             mats.add(flat(Color::srgb(0.5, 0.5, 0.5))),
+            mats.add(flat(Style::Blueprint.background())),
         ],
         ring_mat: [
             mats.add(StandardMaterial {
@@ -757,6 +760,7 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
             }),
             mats.add(flat(Color::srgb(0.1, 0.11, 0.18))),
             mats.add(flat(Color::srgb(0.95, 0.12, 0.06))),
+            mats.add(flat(Color::srgb(0.95, 0.97, 1.0))),
         ],
     });
 }
@@ -806,6 +810,7 @@ pub fn update(
         }
         state.resets = view.resets;
         state.version = u64::MAX;
+        state.instant = view.instant_resets == view.resets;
         // The old pipes are still in the query until the despawns apply: route afresh next
         // frame rather than touching them again.
         return;
@@ -819,6 +824,7 @@ pub fn update(
             .map(|v| v.steps.iter().map(|s| (s.from, s.to, s.title.clone())).collect())
             .unwrap_or_default();
         let ls = links(model, &view.visible, &extra);
+        let instant = std::mem::take(&mut state.instant);
         let routes = route_all(model, &geometry, &view, &ls);
         let mut kept = HashSet::new();
         for (_, mut p) in &mut pipes {
@@ -879,7 +885,7 @@ pub fn update(
                     (body, tag)
                 })
                 .collect();
-            let mut grow = Spring::new(0.0);
+            let mut grow = Spring::new(if instant { 1.0 } else { 0.0 });
             grow.target = 1.0;
             let label = (!l.label.is_empty() || l.count > 1)
                 .then(|| {
@@ -908,7 +914,13 @@ pub fn update(
                     hl: Spring::new(0.0),
                     dim: Spring::new(0.0),
                     grow,
-                    delay: if view.version <= 2 { 0.9 } else { 0.3 },
+                    delay: if instant {
+                        0.0
+                    } else if view.version <= 2 {
+                        0.9
+                    } else {
+                        0.3
+                    },
                     dying: false,
                     built: -1.0,
                     samples: Vec::new(),
