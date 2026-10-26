@@ -178,21 +178,25 @@ pub fn apply(
                     color: Vec4::new(0.0, 0.55, 0.85, 1.0),
                     p: Vec4::new(40.0, 5.0, 9000.0, 0.0),
                     base: lin(style.background()),
+                    ..f.u
                 },
                 Style::Sketch => FloorUniform {
                     color: Vec4::new(0.25, 0.45, 0.85, 1.0),
                     p: Vec4::new(40.0, 5.0, 12000.0, 1.0),
                     base: lin(style.background()),
+                    ..f.u
                 },
                 Style::Blocky => FloorUniform {
                     color: lin(style.background()),
                     p: Vec4::new(4.0, 16.0, 26000.0, 2.0),
                     base: lin(Color::srgb(0.16, 0.3, 0.74)),
+                    ..f.u
                 },
                 Style::Blueprint => FloorUniform {
                     color: Vec4::new(0.85, 0.92, 1.0, 1.0),
                     p: Vec4::new(20.0, 5.0, 14000.0, 3.0),
                     base: lin(style.background()),
+                    ..f.u
                 },
             };
         }

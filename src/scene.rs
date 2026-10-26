@@ -226,6 +226,7 @@ pub fn setup(
                 color: Vec4::new(0.0, 0.55, 0.85, 1.0),
                 p: Vec4::new(40.0, 5.0, 9000.0, 0.0),
                 base: crate::render::lin(BG),
+                ..default()
             },
         })),
         Transform::from_xyz(0.0, -0.05, 0.0),

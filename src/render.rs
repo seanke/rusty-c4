@@ -111,12 +111,31 @@ impl Material for PipeMaterial {
     }
 }
 
-#[derive(Clone, Copy, Default, Debug, ShaderType)]
+/// How many islands the floor knows about, for the blocky style's beaches and shallows.
+pub const MAX_ISLANDS: usize = 48;
+
+#[derive(Clone, Copy, Debug, ShaderType)]
 pub struct FloorUniform {
     pub color: Vec4,
     /// minor spacing, major every n minor, fade distance
     pub p: Vec4,
     pub base: Vec4,
+    /// Island footprints on the ground: centre x, z and half size x, z.
+    pub islands: [Vec4; MAX_ISLANDS],
+    /// x: how many of `islands` are in use
+    pub n: Vec4,
+}
+
+impl Default for FloorUniform {
+    fn default() -> Self {
+        Self {
+            color: Vec4::ZERO,
+            p: Vec4::ZERO,
+            base: Vec4::ZERO,
+            islands: [Vec4::ZERO; MAX_ISLANDS],
+            n: Vec4::ZERO,
+        }
+    }
 }
 
 /// The neon grid floor (see `floor.wgsl`).

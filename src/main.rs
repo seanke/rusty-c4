@@ -19,6 +19,7 @@ mod parser;
 mod pipes;
 mod render;
 mod scene;
+mod scenery;
 mod script;
 mod story;
 mod theme;
@@ -151,6 +152,7 @@ fn main() {
                 story::drive,
                 world::animate,
                 world::follow_surface,
+                scenery::update,
                 detail::update,
             )
                 .chain(),

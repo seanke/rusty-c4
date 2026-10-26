@@ -15,8 +15,10 @@ with where it comes from or goes to. Ports and tags are placed so that nothing o
 Four looks to choose from: **Tron** (neon edges on dark glass, with bloom), **Sketch**
 (pen and ink on paper, with hatched sides and handwriting), **Blocky** (a voxel sandbox:
 islands in a rippling sea, each made of a material picked from its colour — grass and dirt,
-oak planks, cobblestone, stone bricks, prismarine, purpur — joined by redstone dust, with
-torches for ports) and **Blueprint** (white linework on cyanotype blue, blocks drawn like
+oak planks, cobblestone, stone bricks, prismarine, purpur, with mossy, cracked and carved
+blocks mixed in — whose cliffs show dirt, rock, ore and deepslate; sandy beaches and lily
+pads round them, wooded islets and clouds out past them, and redstone dust between them,
+with torches for ports) and **Blueprint** (white linework on cyanotype blue, blocks drawn like
 walls on a floor plan, technical capitals).
 
 Dynamic views are sequences you step through: pick one from the **Sequences** dropdown and

@@ -85,12 +85,19 @@ fn marker(p: vec2<f32>, half: vec2<f32>, k: f32, shape: i32) -> f32 {
 
 // --- Blocky materials -----------------------------------------------------------------
 // Original 16-pixel textures in the spirit of a voxel sandbox game, made from noise and a
-// few rules. `p` is in whole pixels; `side` picks a material's side texture where it has one.
+// few rules. `p` is in whole pixels (on sides, x along the face and y counted down from the
+// top edge); `side` picks a material's side texture; `deco` (0..1) allows surface details
+// like flowers, kept off the middle of a closed block where its label is.
 // Ids: 0 grass, 1 oak planks, 2 cobblestone, 3 stone, 4 sand, 5 stone bricks, 6 bricks,
-// 7 prismarine, 8 purpur, 9 quartz, 10 obsidian.
+// 7 prismarine, 8 purpur, 9 quartz, 10 obsidian, 11 oak log, 12 leaves, 13 cactus.
 
 fn q4(x: f32) -> f32 {
     return floor(x * 4.0) / 4.0;
+}
+
+// The voxel a pixel belongs to, and a per-voxel random number (for block variants).
+fn voxel_hash(p: vec2<f32>, salt: f32) -> f32 {
+    return hash2(floor(p / 16.0) + vec2<f32>(salt, salt * 0.37));
 }
 
 fn cobble(p: vec2<f32>, seed: f32) -> vec2<f32> {
@@ -116,106 +123,369 @@ fn cobble(p: vec2<f32>, seed: f32) -> vec2<f32> {
     return vec2<f32>(d2 - d1, id);
 }
 
-fn bricks(p: vec2<f32>, w: f32, hgt: f32) -> vec3<f32> {
-    // (mortar 0/1, brick id, row); rows of `hgt` pixels, bricks `w` wide, every other row offset.
+fn bricks(p: vec2<f32>, w: f32, hgt: f32) -> vec4<f32> {
+    // (mortar 0/1, brick id, x within the brick, y within the brick); rows of `hgt` pixels,
+    // bricks `w` wide, every other row offset by half a brick.
     let row = floor(p.y / hgt);
     let x = p.x + select(0.0, w * 0.5, fract(row * 0.5) > 0.25);
-    let mortar = select(0.0, 1.0, fract(p.y / hgt) * hgt < 1.0 || fract(x / w) * w < 1.0);
-    return vec3<f32>(mortar, hash2(vec2<f32>(floor(x / w), row)), row);
+    let bx = x - floor(x / w) * w;
+    let by = p.y - row * hgt;
+    let mortar = select(0.0, 1.0, by < 1.0 || bx < 1.0);
+    return vec4<f32>(mortar, hash2(vec2<f32>(floor(x / w), row)), bx, by);
 }
 
-fn texel(mat: i32, p: vec2<f32>, side: bool) -> vec3<f32> {
+// Bare rock: stone with veins of lighter and pinker rock, and gravel pockets.
+fn rock(p: vec2<f32>, n1: f32) -> vec3<f32> {
+    var c = vec3<f32>(0.5, 0.5, 0.51) * (0.84 + 0.22 * q4(n1));
+    let vein = vnoise(p / 26.0 + 31.0);
+    let kind = vnoise(p / 90.0 + 7.0);
+    if vein > 0.72 {
+        if kind < 0.33 {
+            // granite: pink-brown, speckled
+            c = vec3<f32>(0.6, 0.43, 0.37) * (0.85 + 0.25 * q4(hash2(p + 3.3)));
+        } else if kind < 0.66 {
+            // diorite: pale, with dark flecks
+            c = select(vec3<f32>(0.76, 0.76, 0.77), vec3<f32>(0.42), hash2(p + 8.1) > 0.82) * (0.92 + 0.1 * q4(n1));
+        } else {
+            // andesite: mid grey, mottled
+            c = vec3<f32>(0.56, 0.56, 0.55) * (0.82 + 0.26 * q4(hash2(p + 1.7)));
+        }
+    } else if vein < 0.12 {
+        // gravel: loose stones of mixed shades
+        c = vec3<f32>(0.48, 0.45, 0.44) * (0.65 + 0.55 * q4(hash2(p + 9.4)));
+    }
+    return c;
+}
+
+// Ore flecks in rock, if this pixel has any: rarer and richer the deeper it is.
+// Returns (colour, 1 if ore).
+fn ore(p: vec2<f32>, depth: f32, deep: bool) -> vec4<f32> {
+    // Whole ore blocks: some voxels carry a few clumps of flecks.
+    let block = floor(p / 16.0);
+    if hash2(block + 71.0) > 0.11 {
+        return vec4<f32>(0.0);
+    }
+    let cell = floor(p / 5.0);
+    if hash2(cell + 12.0) > 0.6 {
+        return vec4<f32>(0.0);
+    }
+    // A clump of a few pixels round a jittered centre.
+    let c = cell * 5.0 + 1.0 + vec2<f32>(hash2(cell + 2.0), hash2(cell + 5.0)) * 3.0;
+    let r = length(p + 0.5 - c);
+    let speck = hash2(p + 13.0);
+    if r > 1.8 || (r > 1.1 && speck < 0.45) {
+        return vec4<f32>(0.0);
+    }
+    let pick = hash2(block + 33.0);
+    var lit = vec3<f32>(0.14);
+    var dark = vec3<f32>(0.06);
+    if deep {
+        if pick < 0.3 {
+            lit = vec3<f32>(0.45, 0.95, 0.9);
+            dark = vec3<f32>(0.16, 0.6, 0.66);
+        } else if pick < 0.55 {
+            lit = vec3<f32>(1.0, 0.2, 0.12);
+            dark = vec3<f32>(0.58, 0.02, 0.02);
+        } else if pick < 0.75 {
+            lit = vec3<f32>(0.25, 0.4, 0.95);
+            dark = vec3<f32>(0.1, 0.17, 0.55);
+        } else if pick < 0.9 {
+            lit = vec3<f32>(1.0, 0.86, 0.3);
+            dark = vec3<f32>(0.72, 0.52, 0.08);
+        } else {
+            lit = vec3<f32>(0.3, 0.95, 0.5);
+            dark = vec3<f32>(0.04, 0.55, 0.22);
+        }
+    } else {
+        let rich = clamp(depth / 24.0, 0.0, 1.0) * 0.25;
+        if pick < 0.42 - rich {
+            lit = vec3<f32>(0.22);
+            dark = vec3<f32>(0.07);
+        } else if pick < 0.68 - rich {
+            lit = vec3<f32>(0.88, 0.72, 0.6);
+            dark = vec3<f32>(0.62, 0.44, 0.34);
+        } else if pick < 0.86 - rich * 0.5 {
+            lit = vec3<f32>(0.85, 0.5, 0.3);
+            dark = vec3<f32>(0.32, 0.62, 0.5);
+        } else if pick < 0.95 {
+            lit = vec3<f32>(1.0, 0.86, 0.3);
+            dark = vec3<f32>(0.72, 0.52, 0.08);
+        } else {
+            lit = vec3<f32>(0.25, 0.4, 0.95);
+            dark = vec3<f32>(0.1, 0.17, 0.55);
+        }
+    }
+    return vec4<f32>(select(dark, lit, speck > 0.5 && r < 1.3), 1.0);
+}
+
+// Deepslate: dark blue-grey rock in horizontal streaks.
+fn deepslate(p: vec2<f32>, n1: f32) -> vec3<f32> {
+    let streak = q4(hash2(vec2<f32>(floor(p.x / 3.0), p.y) + 4.0));
+    return vec3<f32>(0.3, 0.3, 0.34) * (0.78 + 0.22 * streak + 0.08 * q4(n1));
+}
+
+// The grass top: a gently varying green with darker blades, and flowers where allowed.
+fn grass_top(p: vec2<f32>, n1: f32, deco: f32) -> vec3<f32> {
+    let tint = q4(vnoise(p / 90.0 + 2.0));
+    let base = mix(vec3<f32>(0.34, 0.58, 0.21), vec3<f32>(0.45, 0.66, 0.24), tint);
+    var c = base * (0.82 + 0.3 * q4(n1));
+    // Patches of bare dirt and path, here and there.
+    let worn = vnoise(p / 26.0 + 50.0);
+    if worn > 0.89 && deco > 0.5 {
+        return vec3<f32>(0.55, 0.4, 0.27) * (0.82 + 0.26 * q4(n1));
+    }
+    if hash2(p + 0.7) > 0.93 {
+        c = base * 0.62;
+    }
+    if deco > 0.5 {
+        // A flower in some 5-pixel cells: four petals round a centre, seen from above.
+        let cell = floor(p / 5.0);
+        let fh = hash2(cell + 91.0);
+        if fh < 0.07 {
+            let at = cell * 5.0 + 1.0 + floor(vec2<f32>(hash2(cell + 3.0), hash2(cell + 4.0)) * 3.0);
+            let o = p - at;
+            let kind = hash2(cell + 7.0);
+            var petal = vec3<f32>(1.0, 0.88, 0.2);
+            if kind < 0.25 {
+                petal = vec3<f32>(0.9, 0.12, 0.1);
+            } else if kind < 0.45 {
+                petal = vec3<f32>(0.95, 0.95, 0.92);
+            } else if kind < 0.6 {
+                petal = vec3<f32>(0.35, 0.6, 1.0);
+            } else if kind < 0.72 {
+                petal = vec3<f32>(0.95, 0.55, 0.85);
+            } else if kind < 0.82 {
+                petal = vec3<f32>(1.0, 0.55, 0.15);
+            }
+            if all(o == vec2<f32>(0.0)) {
+                return select(vec3<f32>(1.0, 0.85, 0.2), vec3<f32>(0.25, 0.18, 0.08), kind < 0.6 && kind > 0.25);
+            }
+            if abs(o.x) + abs(o.y) == 1.0 {
+                return petal;
+            }
+        }
+    }
+    return c;
+}
+
+fn texel(mat: i32, p: vec2<f32>, side: bool, deco: f32, rows: f32) -> vec3<f32> {
     let n1 = hash2(p + f32(mat) * 31.7);
     let n2 = hash2(p * 1.31 + 9.1 + f32(mat));
     let u = p - floor(p / 16.0) * 16.0;
+    let vh = voxel_hash(p, f32(mat));
     if mat == 0 {
-        let grass = vec3<f32>(0.36, 0.6, 0.22) * (0.8 + 0.32 * q4(n1));
         if !side {
-            return grass;
+            return grass_top(p, n1, deco);
         }
-        // Dirt, with the grass hanging over the top edge in a ragged fringe.
+        // A cliff: grass hanging over the top in a ragged fringe, a band of dirt, rock
+        // studded with ore, and deepslate further down. Each boundary wanders a little.
         let fringe = 2.0 + floor(hash2(vec2<f32>(p.x, 3.0)) * 2.6);
         if p.y < fringe {
-            return grass * 0.92;
+            return vec3<f32>(0.34, 0.57, 0.21) * (0.78 + 0.32 * q4(n1));
         }
-        // Deep island sides turn to stone.
-        if p.y > 20.0 + floor(hash2(vec2<f32>(p.x, 7.0)) * 3.0) {
-            return vec3<f32>(0.5, 0.5, 0.5) * (0.8 + 0.28 * q4(n1));
+        let dirt_to = 6.0 + floor(vnoise(vec2<f32>(p.x / 4.0, 1.0)) * 3.0);
+        if p.y < dirt_to {
+            var dirt = vec3<f32>(0.53, 0.38, 0.26) * (0.82 + 0.26 * q4(n1));
+            if n2 > 0.9 {
+                dirt = vec3<f32>(0.38, 0.27, 0.18);
+            } else if n2 < 0.06 {
+                dirt = vec3<f32>(0.62, 0.48, 0.34);
+            }
+            return dirt;
         }
-        var dirt = vec3<f32>(0.53, 0.38, 0.26) * (0.82 + 0.26 * q4(n1));
-        if n2 > 0.9 {
-            dirt = vec3<f32>(0.38, 0.27, 0.18);
-        } else if n2 < 0.06 {
-            dirt = vec3<f32>(0.62, 0.48, 0.34);
+        // Bedrock along the very bottom of a tall cliff.
+        let bed = rows - 1.0 - floor(hash2(vec2<f32>(p.x, 11.0)) * 3.0);
+        if rows > 40.0 && p.y >= bed {
+            return vec3<f32>(0.22) * (0.5 + 0.9 * q4(n1));
         }
-        return dirt;
+        let deep_at = max(22.0, rows * 0.55) + floor(vnoise(vec2<f32>(p.x / 6.0, 9.0)) * 4.0);
+        let deep = p.y >= deep_at;
+        let o = ore(p, p.y, deep);
+        if o.w > 0.5 {
+            return o.rgb;
+        }
+        if deep {
+            return deepslate(p, n1);
+        }
+        return rock(p, n1);
     }
     if mat == 1 {
-        // Planks four pixels tall with dark seams, butt joints staggered, a little grain.
+        // Planks four pixels tall with dark seams, butt joints staggered, a little grain
+        // and the odd knot. Some blocks are a paler or a darker wood.
         let row = floor(p.y / 4.0);
         let joint = select(0.0, 8.0, fract(row * 0.5) > 0.25) + floor(hash2(vec2<f32>(row, 2.0)) * 2.0) * 4.0;
         let along = p.x - joint;
         let seam = fract(p.y / 4.0) * 4.0 > 2.5 || (along - floor(along / 16.0) * 16.0) < 1.0;
         let grain = 0.88 + 0.16 * q4(hash2(vec2<f32>(floor(p.x / 3.0), p.y)));
-        let wood = vec3<f32>(0.66, 0.52, 0.32) * grain;
-        return select(wood, vec3<f32>(0.44, 0.34, 0.2), seam);
+        var wood = vec3<f32>(0.66, 0.52, 0.32);
+        var gap = vec3<f32>(0.44, 0.34, 0.2);
+        if vh < 0.12 {
+            wood = vec3<f32>(0.8, 0.72, 0.52);
+            gap = vec3<f32>(0.6, 0.53, 0.37);
+        } else if vh < 0.22 {
+            wood = vec3<f32>(0.46, 0.33, 0.2);
+            gap = vec3<f32>(0.3, 0.21, 0.12);
+        }
+        if seam {
+            return gap;
+        }
+        if n2 > 0.985 {
+            return gap * 0.9;
+        }
+        return wood * grain;
     }
     if mat == 2 || mat == 10 {
         let c = cobble(p, f32(mat));
         if mat == 10 {
-            // Obsidian: near-black, purple glints.
+            // Obsidian: near-black with purple glints; some blocks weep bright tears.
             var o = vec3<f32>(0.07, 0.05, 0.11) * (0.8 + 0.5 * q4(c.y));
             if n1 > 0.93 {
                 o = vec3<f32>(0.36, 0.22, 0.5);
+            }
+            if vh < 0.15 && n2 > 0.9 {
+                o = vec3<f32>(0.75, 0.35, 1.0);
             }
             return o;
         }
         if c.x < 0.9 {
             return vec3<f32>(0.3, 0.3, 0.3) * (0.85 + 0.2 * n2);
         }
-        let stone = 0.47 + 0.16 * q4(c.y) + 0.06 * (q4(n1) - 0.5);
+        var stone = vec3<f32>(0.47 + 0.16 * q4(c.y) + 0.06 * (q4(n1) - 0.5));
+        // Moss creeping over some of the stones.
+        let moss = vnoise(p / 9.0 + 40.0);
+        if moss > 0.6 && hash2(p + 2.2) < (moss - 0.6) * 4.0 {
+            stone = vec3<f32>(0.36, 0.5, 0.24) * (0.8 + 0.3 * q4(n1));
+        }
         // A lit upper-left on each stone.
-        return vec3<f32>(stone) * select(1.0, 1.1, c.x < 1.6 && n2 > 0.5);
+        return stone * select(1.0, 1.1, c.x < 1.6 && n2 > 0.5);
     }
     if mat == 3 {
-        return vec3<f32>(0.5, 0.5, 0.51) * (0.86 + 0.2 * q4(n1));
+        let o = ore(p, 12.0, false);
+        if o.w > 0.5 && side {
+            return o.rgb;
+        }
+        return rock(p, n1);
     }
     if mat == 4 {
+        // Sand, and here and there a block of layered sandstone.
+        if vh < 0.15 {
+            let band = fract(u.y / 4.0) * 4.0 < 1.0;
+            return vec3<f32>(0.85, 0.79, 0.58) * select(0.95 + 0.07 * q4(n1), 0.84, band);
+        }
         return vec3<f32>(0.86, 0.81, 0.6) * (0.9 + 0.13 * q4(n1));
     }
-    if mat == 5 || mat == 6 {
+    if mat == 5 {
         let br = bricks(p, 8.0, 4.0);
-        if mat == 5 {
-            if br.x > 0.5 {
-                return vec3<f32>(0.32, 0.32, 0.33);
-            }
-            return vec3<f32>(0.5 + 0.08 * (br.y - 0.5)) * (0.9 + 0.14 * q4(n1));
+        if br.x > 0.5 {
+            return vec3<f32>(0.32, 0.32, 0.33);
         }
+        var c = vec3<f32>(0.5 + 0.08 * (br.y - 0.5)) * (0.9 + 0.14 * q4(n1));
+        // Some bricks are cracked, some mossy.
+        if br.y < 0.12 {
+            let crack = abs(br.z - 1.5 - br.w * 1.4 - floor(br.y * 30.0) % 3.0);
+            if crack < 0.6 {
+                c = vec3<f32>(0.3);
+            }
+        } else if br.y > 0.86 && hash2(p + 6.1) > 0.35 {
+            c = vec3<f32>(0.37, 0.5, 0.26) * (0.85 + 0.25 * q4(n1));
+        }
+        // Chiseled blocks: a carved ring.
+        if vh < 0.06 {
+            let e = min(min(u.x, u.y), min(15.0 - u.x, 15.0 - u.y));
+            c = vec3<f32>(0.55) * select(1.0, 0.68, e == 0.0 || e == 3.0) * (0.92 + 0.1 * q4(n1));
+        }
+        return c;
+    }
+    if mat == 6 {
+        let br = bricks(p, 8.0, 4.0);
         if br.x > 0.5 {
             return vec3<f32>(0.62, 0.6, 0.57) * (0.9 + 0.1 * n2);
         }
         return vec3<f32>(0.58, 0.28, 0.21) * (0.85 + 0.22 * br.y) * (0.92 + 0.1 * q4(n1));
     }
     if mat == 7 {
-        // Prismarine: teal, mottled in slow patches that shift toward blue and green.
+        // Prismarine, with blocks of prismarine bricks, dark prismarine and the odd
+        // glowing sea lantern.
+        if vh < 0.025 {
+            // Sea lantern: a pale glowing block with darker frosted corners.
+            let cq = abs(u - 7.5);
+            let corner = cq.x > 4.0 && cq.y > 4.0;
+            let frame = min(min(u.x, u.y), min(15.0 - u.x, 15.0 - u.y)) < 1.0;
+            let glow = vec3<f32>(0.88, 0.98, 0.95) * (0.95 + 0.08 * q4(n1));
+            return select(glow * 1.1, vec3<f32>(0.6, 0.78, 0.74), corner || frame);
+        }
+        if vh < 0.18 {
+            let br = bricks(p, 8.0, 4.0);
+            return select(vec3<f32>(0.42, 0.68, 0.62) * (0.9 + 0.12 * q4(n1)), vec3<f32>(0.26, 0.45, 0.42), br.x > 0.5);
+        }
+        if vh < 0.26 {
+            let line = u.x == 0.0 || u.y == 0.0 || u.y == 8.0;
+            return select(vec3<f32>(0.2, 0.36, 0.32) * (0.85 + 0.2 * q4(n1)), vec3<f32>(0.12, 0.24, 0.22), line);
+        }
         let blot = q4(vnoise(p / 3.5 + 4.0));
-        let a = vec3<f32>(0.34, 0.6, 0.55);
-        let c = mix(a, vec3<f32>(0.3, 0.48, 0.58), blot);
+        let c = mix(vec3<f32>(0.34, 0.6, 0.55), vec3<f32>(0.3, 0.48, 0.58), blot);
         return c * (0.88 + 0.16 * q4(n1));
     }
     if mat == 8 {
-        // Purpur: 8-pixel tiles with a dark border and a lighter middle.
+        // Purpur: 8-pixel tiles with a dark border and a lighter middle; some blocks are
+        // fluted pillars.
+        let base = vec3<f32>(0.66, 0.48, 0.66) * (0.9 + 0.12 * q4(n1));
+        if vh < 0.18 {
+            let flute = u.x - floor(u.x / 4.0) * 4.0;
+            return base * select(1.04, 0.74, flute == 0.0);
+        }
         let t = u - floor(u / 8.0) * 8.0;
         let edge = min(min(t.x, t.y), min(7.0 - t.x, 7.0 - t.y));
-        let base = vec3<f32>(0.66, 0.48, 0.66) * (0.9 + 0.12 * q4(n1));
         if edge < 1.0 {
             return base * 0.72;
         }
         return base * select(1.0, 1.06, edge > 1.5);
     }
-    // Quartz: smooth and pale with a faint bevel round each block.
+    if mat == 11 {
+        // Oak log: rough vertical bark on the sides, growth rings on the cut top.
+        if side {
+            let ridge = q4(hash2(vec2<f32>(p.x, floor(p.y / 3.0)) + 5.0));
+            return vec3<f32>(0.42, 0.31, 0.19) * (0.75 + 0.35 * ridge);
+        }
+        let r = floor(length(u - 7.5) / 1.6);
+        return select(vec3<f32>(0.68, 0.54, 0.33), vec3<f32>(0.52, 0.4, 0.24), r % 2.0 == 0.0) * (0.92 + 0.1 * q4(n1));
+    }
+    if mat == 13 {
+        // Cactus: ribbed green sides with pale spines, a lighter cut top.
+        if side {
+            let rib = p.x - floor(p.x / 4.0) * 4.0;
+            var c = vec3<f32>(0.3, 0.52, 0.18) * select(1.0, 0.72, rib == 0.0) * (0.9 + 0.12 * q4(n1));
+            if rib == 2.0 && n2 > 0.8 {
+                c = vec3<f32>(0.85, 0.85, 0.7);
+            }
+            return c;
+        }
+        let e = min(min(u.x, u.y), min(15.0 - u.x, 15.0 - u.y));
+        return vec3<f32>(0.42, 0.62, 0.26) * select(1.0, 0.8, e < 2.0) * (0.92 + 0.1 * q4(n1));
+    }
+    if mat == 12 {
+        // Leaves: dark green clumps with deep gaps between them, and the odd apple.
+        let clump = q4(hash2(floor(p / 2.0) + 3.0));
+        var c = vec3<f32>(0.24, 0.46, 0.16) * (0.72 + 0.45 * clump);
+        if n1 > 0.82 {
+            c = vec3<f32>(0.1, 0.22, 0.07);
+        }
+        if vh < 0.25 && n2 > 0.992 {
+            c = vec3<f32>(0.85, 0.12, 0.1);
+        }
+        return c;
+    }
+    // Quartz: smooth and pale with a faint bevel; some blocks chiseled, some pillars.
     let edge = min(min(u.x, u.y), min(15.0 - u.x, 15.0 - u.y));
-    return vec3<f32>(0.92, 0.89, 0.84) * (0.95 + 0.06 * q4(n1)) * select(1.0, 0.9, edge < 1.0);
+    var c = vec3<f32>(0.92, 0.89, 0.84) * (0.95 + 0.06 * q4(n1));
+    if vh < 0.12 {
+        return c * select(1.0, 0.82, edge == 2.0 || edge == 5.0);
+    }
+    if vh < 0.24 {
+        let line = u.x - floor(u.x / 5.0) * 5.0;
+        return c * select(1.0, 0.86, line == 0.0);
+    }
+    return c * select(1.0, 0.9, edge < 1.0);
 }
 
 @fragment
@@ -288,7 +558,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // --- Blocky: Minecraft-like voxels -----------------------------------------------------
     if style == 2 {
-        let px = 4.0 * scale;
+        // An opened block takes on its children's pixel size, so the whole world shares one
+        // voxel grid at the level you are looking at.
+        let px = select(4.0 * scale, b.q.y / 5.0, opened > 0.5);
         let mat = i32(b.neon.x + 0.5);
         // Pixel coordinates: world-aligned on top, counted down from the top edge on the
         // sides (so side textures, like grass's fringe, hang from the top).
@@ -300,7 +572,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             p = vec2<f32>(floor(side_x / px), floor(h * (1.0 - v) / px));
             light = select(0.8, 0.6, abs(n.x) > abs(n.z));
         }
-        var col = texel(mat, p, side);
+        // Where texture pixels shrink below screen pixels, read coarser ones so the surface
+        // doesn't fizz with noise.
+        let on_screen = px / max(length(fwidth(wp)), 1e-6);
+        let lod = select(select(1.0, 4.0, on_screen < 1.2), 16.0, on_screen < 0.3);
+        p = floor(p / lod) * lod + floor(lod * 0.5);
+        // Surface details stay off the middle of a closed block, where its label is.
+        let in_label = abs(local.x) < half.x * 0.85 && abs(local.y) < half.y * 0.55;
+        let deco = select(1.0, 0.0, in_label && opened < 0.5);
+        var col = texel(mat, p, side, deco, floor(h / px));
         if face < 0.5 {
             // A pixel icon for the element's shape, and the thin black selection box.
             let snapped = (floor(local / px) + 0.5) * px;
@@ -314,6 +594,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             let y = v * h;
             let edge = select(0.0, 1.0, h - y < px * 0.6 || y < px * 0.6);
             col = mix(col, vec3<f32>(0.0), edge * max(hover, sel) * 0.9);
+            // A soft shadow where the side meets the ground.
+            col = col * mix(0.72, 1.0, clamp(y / (px * 3.0), 0.0, 1.0));
         }
         col = col * light * (1.0 - 0.5 * dim);
         // The textures are authored in sRGB; the target wants linear light.

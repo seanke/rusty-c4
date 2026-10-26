@@ -192,7 +192,7 @@ pub fn rounded_outline(size: Vec2, radius: f32) -> Vec<Vec2> {
 
 /// A rounded-rectangle prism of unit height standing on y = 0, footprint `size` (x, z).
 /// `uv` holds local top-face coordinates (x, up the screen); `uv_b` (height fraction, face).
-fn prism(size: Vec2, radius: f32) -> Mesh {
+pub fn prism(size: Vec2, radius: f32) -> Mesh {
     let outline = rounded_outline(size, radius);
     let n = outline.len();
     let mut pos = Vec::new();
