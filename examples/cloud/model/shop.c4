@@ -1,0 +1,62 @@
+// The online shop: its front ends, services and data.
+
+model {
+  shop = system 'Online Shop' 'Everything a customer needs to find and buy things from us' {
+    web = webapp 'Storefront' 'Server-rendered shop front' 'Next.js'
+    mobile = mobileapp 'Mobile App' 'Native shopping app' 'Swift / Kotlin'
+    gateway = container 'API Gateway' 'Routing, auth and rate limiting' 'Envoy'
+
+    catalog = container 'Catalog Service' 'Products, prices and search' 'Go' {
+      api = component 'Catalog API' 'REST and GraphQL endpoints' 'gqlgen'
+      search = component 'Search Indexer' 'Keeps the search index fresh' 'Go'
+      pricing = component 'Pricing Engine' 'Discounts and promotions' 'Go'
+      catalogDb = database 'Catalog DB' 'Products and prices' 'PostgreSQL' {
+        products = table 'products' 'id · sku · name · description · category_id' 'table'
+        categories = table 'categories' 'id · name · parent_id' 'table'
+        prices = table 'prices' 'id · product_id · amount · currency · valid_from' 'table'
+        promotions = table 'promotions' 'id · code · percent_off · starts · ends' 'table'
+        searchIndex = table 'search_index' 'product_id · tokens · updated_at' 'materialized view'
+
+        products -> categories 'category_id'
+        categories -> categories 'parent_id'
+        prices -> products 'product_id'
+        searchIndex -> products 'product_id'
+      }
+
+      api -> pricing 'computes prices'
+      api -> catalogDb.products 'reads products'
+      api -> catalogDb.categories 'reads categories'
+      pricing -> catalogDb.prices 'reads prices'
+      pricing -> catalogDb.promotions 'applies promotions'
+      search -> catalogDb.searchIndex 'rebuilds'
+    }
+
+    orders = container 'Order Service' 'Carts, checkout and order history' 'Kotlin' {
+      cart = component 'Cart' 'Session carts' 'Spring'
+      checkout = component 'Checkout' 'Turns carts into orders' 'Spring'
+      history = component 'Order History' 'Past orders and invoices' 'Spring'
+      ordersDb = database 'Orders DB' 'Orders and carts' 'PostgreSQL' {
+        carts = table 'carts' 'id · session_id · updated_at' 'table'
+        cartItems = table 'cart_items' 'cart_id · product_id · quantity' 'table'
+        orders = table 'orders' 'id · customer_id · status · total · placed_at' 'table'
+        orderItems = table 'order_items' 'order_id · product_id · quantity · price' 'table'
+        invoices = table 'invoices' 'id · order_id · pdf_url · issued_at' 'table'
+
+        cartItems -> carts 'cart_id'
+        orderItems -> orders 'order_id'
+        invoices -> orders 'order_id'
+      }
+
+      cart -> ordersDb.carts 'stores carts'
+      cart -> ordersDb.cartItems 'stores items'
+      checkout -> cart 'reads cart'
+      checkout -> ordersDb.orders 'writes orders'
+      checkout -> ordersDb.orderItems 'writes items'
+      history -> ordersDb.orders 'reads orders'
+      history -> ordersDb.invoices 'reads invoices'
+    }
+
+    events = queue 'Event Bus' 'Domain events between services' 'Kafka'
+    notify = container 'Notifications' 'Email, SMS and push' 'Node.js'
+  }
+}

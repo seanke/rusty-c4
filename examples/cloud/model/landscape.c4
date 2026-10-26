@@ -1,0 +1,25 @@
+// The people and systems around the shop, and how they talk to each other.
+
+model {
+  customer = actor 'Customer' 'Browses the catalogue and places orders'
+  support = actor 'Support Agent' 'Helps customers with orders and refunds'
+  payments = external 'Payment Provider' 'Card and wallet payments' 'Stripe'
+
+  customer -> shop.web 'browses and buys'
+  customer -> shop.mobile 'shops on the go'
+  shop.web -> shop.gateway 'API calls' 'HTTPS'
+  shop.mobile -> shop.gateway 'API calls' 'HTTPS'
+  shop.gateway -> shop.catalog.api 'product queries'
+  shop.gateway -> shop.orders.checkout 'checkout'
+  shop.gateway -> shop.orders.cart 'cart updates'
+  shop.gateway -> shop.orders.history 'order history'
+  shop.orders.checkout -> payments 'charges card'
+  shop.orders.checkout -> shop.events 'OrderPlaced'
+  shop.catalog.pricing -> shop.events 'PriceChanged'
+  shop.events -> shop.notify 'order events'
+  shop.events -> warehouse.wms 'ship orders'
+  shop.notify -> customer 'sends updates'
+  support -> backoffice.admin 'manages orders'
+  backoffice.admin -> shop.gateway 'admin API'
+  warehouse.wms -> shop.events 'OrderShipped'
+}

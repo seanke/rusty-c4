@@ -25,8 +25,8 @@ use cosmic_text::{
 };
 
 use crate::parser::{is_mermaid, Diagnostic};
-use crate::scene::{Diagram, Fonts, Watch, TEXT};
-use crate::ui::WhenLoaded;
+use crate::model::{Id, Model};
+use crate::scene::{Diagram, Fonts, Jump, Nav, NavQueue, Watch, TEXT};
 use crate::workspace::Workspace;
 
 /// Starting panel width, and the file list's width, in logical pixels.
@@ -197,12 +197,24 @@ pub struct Code {
     pending_complete: bool,
     pending_fix: bool,
     pending_save: bool,
+    /// The cursor was just placed by a click: show what's under it in 3D.
+    pending_reveal: bool,
 }
 
 impl Code {
     /// How much of the window's width the panel takes (0 when closed).
     pub fn split_width(&self) -> f32 {
         if self.open { self.width } else { 0.0 }
+    }
+
+    pub fn toggle(&mut self) {
+        self.open = !self.open;
+        self.focused = self.open;
+        self.redraw = true;
+    }
+
+    pub fn request_save(&mut self) {
+        self.pending_save = true;
     }
 
     /// Keys are going to the editor; the rest of the app should leave them alone.
@@ -322,6 +334,35 @@ impl Code {
     }
 }
 
+/// The element whose name is at byte `index` of `text` (line `line` of `file`): one declared
+/// there, else the one a reference there names (`a.b.c` in full, or a unique short name).
+fn element_at(model: &Model, file: &str, line: usize, text: &str, index: usize) -> Option<Id> {
+    let col = text[..index.min(text.len())].chars().count();
+    let declared = model.elements.iter().position(|e| {
+        e.decl.as_ref().is_some_and(|d| d.file == file && d.line == line && d.col <= col && col <= d.col + d.len)
+    });
+    if declared.is_some() {
+        return declared;
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
+    let start = text[..index.min(text.len())].char_indices().rev().take_while(|(_, c)| is_word(*c)).last().map_or(index, |(i, _)| i);
+    let end = text[index.min(text.len())..].char_indices().find(|(_, c)| !is_word(*c)).map_or(text.len(), |(i, _)| index + i);
+    let word = text.get(start..end)?.trim_matches('.');
+    if word.is_empty() {
+        return None;
+    }
+    if let Some(&id) = model.by_fqn.get(word) {
+        return Some(id);
+    }
+    let mut found = model.elements.iter().enumerate().filter(|(_, e)| {
+        !e.fqn.is_empty() && (e.fqn.ends_with(&format!(".{word}")) || e.fqn == word)
+    });
+    match (found.next(), found.next()) {
+        (Some((id, _)), None) => Some(id),
+        _ => None,
+    }
+}
+
 fn char_to_byte(s: &str, col: usize) -> usize {
     s.char_indices().nth(col).map_or(s.len(), |(i, _)| i)
 }
@@ -344,8 +385,6 @@ pub struct Header;
 #[derive(Component)]
 pub struct Status;
 
-#[derive(Component)]
-pub struct Toggle;
 
 #[derive(Component)]
 pub struct FixButton;
@@ -362,7 +401,7 @@ fn ui_font(fonts: &Fonts, size: f32, weight: FontWeight) -> TextFont {
     }
 }
 
-pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: Res<Fonts>) {
+pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: Res<Fonts>, chrome: Res<crate::chrome::Chrome>) {
     // A monospace face for code.
     let mut db = fontdb::Database::new();
     for path in [
@@ -431,38 +470,17 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
         pending_complete: false,
         pending_fix: false,
         pending_save: false,
+        pending_reveal: false,
     });
 
     let panel_bg = Color::srgb(0.045, 0.055, 0.075);
     let hairline = Color::srgba(1.0, 1.0, 1.0, 0.08);
-    // The button that opens the panel.
-    commands.spawn((
-        Button,
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(16),
-            left: px(16),
-            padding: UiRect::axes(px(12), px(7)),
-            border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(10)),
-            ..default()
-        },
-        BackgroundColor(panel_bg),
-        BorderColor::all(hairline),
-        Toggle,
-        WhenLoaded,
-        children![(
-            Text::new("</>  Source   ⌘E"),
-            ui_font(&fonts, 13.0, FontWeight::MEDIUM),
-            TextColor(TEXT.with_alpha(0.85)),
-        )],
-    ));
-    // Docked on the right, full height; the 3D view gets the rest of the window.
+    // Docked on the right, below the toolbar; the 3D view gets the rest of the window.
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                top: px(0),
+                top: px(chrome.top),
                 right: px(0),
                 bottom: px(0),
                 width: px(PANEL_W),
@@ -581,7 +599,7 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            top: px(0),
+            top: px(chrome.top),
             bottom: px(0),
             right: px(PANEL_W - 4.0),
             width: px(8),
@@ -644,23 +662,33 @@ pub fn input(
     scroll: Res<AccumulatedMouseScroll>,
     view: Single<(&RelativeCursorPosition, &ComputedNode), With<CodeView>>,
     panel: Single<&Interaction, With<Panel>>,
-    toggle: Query<&Interaction, (With<Toggle>, Changed<Interaction>)>,
     fix_button: Query<&Interaction, (With<FixButton>, Changed<Interaction>)>,
+    (mut queue, mut jump): (ResMut<NavQueue>, ResMut<Jump>),
 ) {
     let code = &mut *code;
     code.swallowed = false;
     let cmd = keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight, KeyCode::ControlLeft, KeyCode::ControlRight]);
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
-    let toggled = toggle.iter().any(|i| *i == Interaction::Pressed) || (cmd && keys.just_pressed(KeyCode::KeyE));
-    if toggled && diagram.loaded {
-        code.open = !code.open;
-        code.focused = code.open;
-        code.redraw = true;
+    // Save works with the panel closed, too.
+    if std::mem::take(&mut code.pending_save) {
+        save(&mut ws, &mut watch, code);
     }
     if !code.open || ws.files.is_empty() {
         events.clear();
+        jump.to_code = None;
         return;
+    }
+
+    // A block clicked in 3D: open the file declaring it, at its name.
+    let mut goto = None;
+    if let Some(id) = jump.to_code.take() {
+        if let Some(d) = diagram.model.elements.get(id).and_then(|e| e.decl.clone()) {
+            if let Some(i) = ws.files.iter().position(|f| f.rel == d.file) {
+                ws.active = i;
+                goto = Some(d);
+            }
+        }
     }
 
     // Load the active file into the editor when it changes (or is reloaded from disk).
@@ -686,6 +714,22 @@ pub fn input(
         }
         code.completion = None;
         code.loaded = Some(key);
+    }
+    if let Some(d) = goto {
+        let line = d.line.saturating_sub(1);
+        let text = code.line_text(line);
+        let (s, e) = (char_to_byte(&text, d.col), char_to_byte(&text, d.col + d.len));
+        // Select the name, with a few lines above it in view.
+        code.editor.set_cursor(Cursor::new(line, e));
+        code.editor.set_selection(Selection::Normal(Cursor::new(line, s)));
+        code.editor.with_buffer_mut(|b| {
+            let mut scroll = b.scroll();
+            scroll.line = line.saturating_sub(6);
+            scroll.vertical = 0.0;
+            b.set_scroll(scroll);
+        });
+        code.completion = None;
+        code.redraw = true;
     }
 
     let now = time.elapsed_secs_f64();
@@ -714,6 +758,7 @@ pub fn input(
                 });
                 code.dragging = n == 1;
                 code.completion = None;
+                code.pending_reveal = true;
             }
         } else if **panel == Interaction::None {
             code.focused = false;
@@ -748,7 +793,6 @@ pub fn input(
             }
             if cmd {
                 match ev.key_code {
-                    KeyCode::KeyS => save(&mut ws, &mut watch, code),
                     KeyCode::KeyZ if shift => {
                         if let Some(s) = code.redo.pop() {
                             let cur = Snapshot {
@@ -931,8 +975,14 @@ pub fn input(
         }
     }
 
-    if std::mem::take(&mut code.pending_save) {
-        save(&mut ws, &mut watch, code);
+    // A click on an element's name (where it's declared or referred to) flies the 3D view
+    // to it.
+    if std::mem::take(&mut code.pending_reveal) {
+        let cur = code.editor.cursor();
+        let line = code.line_text(cur.line);
+        if let Some(id) = element_at(&diagram.model, &ws.files[active].rel, cur.line + 1, &line, cur.index) {
+            queue.0.push(Nav::Reveal(id));
+        }
     }
 
     // ⌘. or the Fix button: apply the suggested fix nearest the cursor.
@@ -1036,6 +1086,7 @@ pub fn script(code: &mut Code, ws: &mut Workspace, action: &str, arg: &str) {
         }
         "fix" => code.pending_fix = true,
         "save" => code.pending_save = true,
+        "codeclick" => code.pending_reveal = true,
         _ => {}
     }
 }
@@ -1111,10 +1162,7 @@ pub fn draw(
         Single<&mut Text, (With<Header>, Without<Status>)>,
         Single<&mut Text, (With<Status>, Without<Header>)>,
     ),
-    (mut fix_btn, mut views_panel): (
-        Single<&mut Node, (With<FixButton>, Without<Panel>, Without<crate::story::ViewsPanel>)>,
-        Query<&mut Node, (With<crate::story::ViewsPanel>, Without<Panel>, Without<FixButton>)>,
-    ),
+    mut fix_btn: Single<&mut Node, (With<FixButton>, Without<Panel>)>,
     buttons: Query<(&Interaction, &FileButton), Changed<Interaction>>,
     scroll: Res<AccumulatedMouseScroll>,
     mut built: Local<Option<(u64, usize, Vec<bool>)>>,
@@ -1123,9 +1171,6 @@ pub fn draw(
     let display = if code.open && diagram.loaded { Display::Flex } else { Display::None };
     if panel.display != display {
         panel.display = display;
-    }
-    for mut n in &mut views_panel {
-        n.right = px(16.0 + code.split_width());
     }
     if display == Display::None || ws.files.is_empty() {
         return;
@@ -1152,7 +1197,13 @@ pub fn draw(
         *built = Some(state);
         commands.entity(tree_e).despawn_related::<Children>();
         let mut order: Vec<usize> = (0..ws.files.len()).collect();
-        order.sort_by(|a, b| ws.files[*a].rel.cmp(&ws.files[*b].rel));
+        // Like a file explorer: within each folder, its folders first, then its files.
+        let key = |rel: &str| {
+            let parts: Vec<&str> = rel.split('/').collect();
+            let last = parts.len() - 1;
+            parts.iter().enumerate().map(|(i, p)| (i == last, p.to_string())).collect::<Vec<_>>()
+        };
+        order.sort_by_key(|i| key(&ws.files[*i].rel));
         let mut shown_dirs: BTreeSet<String> = BTreeSet::new();
         for i in order {
             let rel = &ws.files[i].rel;
@@ -1438,9 +1489,9 @@ pub fn split(
     mouse: Res<ButtonInput<MouseButton>>,
     mut divider: Single<(&Interaction, &mut Node), With<Divider>>,
     mut tree: Single<&mut Node, (With<Tree>, Without<Divider>)>,
-    mut bars: Query<&mut Node, (Or<(With<crate::ui::HintBar>, With<crate::story::PlayerBar>)>, Without<Divider>, Without<Tree>)>,
     mut cameras: Query<&mut Camera, Or<(With<Camera3d>, With<crate::scene::OverlayCamera>)>>,
     diagram: Res<Diagram>,
+    chrome: Res<crate::chrome::Chrome>,
 ) {
     let (win_e, win) = *window;
     let open = code.open && diagram.loaded;
@@ -1477,15 +1528,14 @@ pub fn split(
         tree.display = tree_display;
     }
 
+    // The 3D view: below the toolbar, left of the panel.
     let w = code.split_width();
-    for mut n in &mut bars {
-        n.right = px(w);
-    }
     let sf = win.scale_factor();
     let full = win.physical_size();
-    let viewport = (w > 0.0).then(|| bevy::camera::Viewport {
-        physical_position: UVec2::ZERO,
-        physical_size: UVec2::new(full.x.saturating_sub((w * sf) as u32).max(1), full.y.max(1)),
+    let top = (chrome.top * sf) as u32;
+    let viewport = Some(bevy::camera::Viewport {
+        physical_position: UVec2::new(0, top),
+        physical_size: UVec2::new(full.x.saturating_sub((w * sf) as u32).max(1), full.y.saturating_sub(top).max(1)),
         depth: 0.0..1.0,
     });
     let key = |v: &Option<bevy::camera::Viewport>| v.as_ref().map(|v| (v.physical_position, v.physical_size));

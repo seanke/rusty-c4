@@ -1,13 +1,13 @@
 // An extruded element block, in one of four styles (q.w): 0 Tron (near-black body, neon
-// edges), 1 Sketch (paper with wobbly ink outlines and hatched sides), 2 Blocky (pixel
-// textured voxels), 3 Blueprint (white linework drawn like walls on a floor plan). The mesh puts local top-face coordinates (x, up-the-screen) in `uv` and
+// edges), 1 Sketch (paper with wobbly ink outlines and hatched sides), 2 Blocky (voxel
+// sandbox materials picked by colour), 3 Blueprint (white linework drawn like walls on a floor plan). The mesh puts local top-face coordinates (x, up-the-screen) in `uv` and
 // (height fraction, face: 0 top / 1 side) in `uv_b`.
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::view
 
 struct Block {
-    // Tron: neon colour (linear); Sketch: ink; Blocky: unused. w: glow intensity
+    // Tron: neon colour (linear); Sketch: ink; Blocky: x is the material id. w: glow intensity
     neon: vec4<f32>,
     // body colour (linear)
     body: vec4<f32>,
@@ -83,6 +83,141 @@ fn marker(p: vec2<f32>, half: vec2<f32>, k: f32, shape: i32) -> f32 {
     return 1e5;
 }
 
+// --- Blocky materials -----------------------------------------------------------------
+// Original 16-pixel textures in the spirit of a voxel sandbox game, made from noise and a
+// few rules. `p` is in whole pixels; `side` picks a material's side texture where it has one.
+// Ids: 0 grass, 1 oak planks, 2 cobblestone, 3 stone, 4 sand, 5 stone bricks, 6 bricks,
+// 7 prismarine, 8 purpur, 9 quartz, 10 obsidian.
+
+fn q4(x: f32) -> f32 {
+    return floor(x * 4.0) / 4.0;
+}
+
+fn cobble(p: vec2<f32>, seed: f32) -> vec2<f32> {
+    // Jittered points every 5 pixels; returns (gap to the second-nearest, stone id).
+    let c = floor(p / 5.0);
+    var d1 = 1e5;
+    var d2 = 1e5;
+    var id = 0.0;
+    for (var j = -1; j <= 1; j++) {
+        for (var i = -1; i <= 1; i++) {
+            let g = c + vec2<f32>(f32(i), f32(j));
+            let o = vec2<f32>(hash2(g + seed), hash2(g + seed + 17.0)) * 4.0;
+            let dd = length(p + 0.5 - (g * 5.0 + 0.5 + o));
+            if dd < d1 {
+                d2 = d1;
+                d1 = dd;
+                id = hash2(g + seed + 5.0);
+            } else if dd < d2 {
+                d2 = dd;
+            }
+        }
+    }
+    return vec2<f32>(d2 - d1, id);
+}
+
+fn bricks(p: vec2<f32>, w: f32, hgt: f32) -> vec3<f32> {
+    // (mortar 0/1, brick id, row); rows of `hgt` pixels, bricks `w` wide, every other row offset.
+    let row = floor(p.y / hgt);
+    let x = p.x + select(0.0, w * 0.5, fract(row * 0.5) > 0.25);
+    let mortar = select(0.0, 1.0, fract(p.y / hgt) * hgt < 1.0 || fract(x / w) * w < 1.0);
+    return vec3<f32>(mortar, hash2(vec2<f32>(floor(x / w), row)), row);
+}
+
+fn texel(mat: i32, p: vec2<f32>, side: bool) -> vec3<f32> {
+    let n1 = hash2(p + f32(mat) * 31.7);
+    let n2 = hash2(p * 1.31 + 9.1 + f32(mat));
+    let u = p - floor(p / 16.0) * 16.0;
+    if mat == 0 {
+        let grass = vec3<f32>(0.36, 0.6, 0.22) * (0.8 + 0.32 * q4(n1));
+        if !side {
+            return grass;
+        }
+        // Dirt, with the grass hanging over the top edge in a ragged fringe.
+        let fringe = 2.0 + floor(hash2(vec2<f32>(p.x, 3.0)) * 2.6);
+        if p.y < fringe {
+            return grass * 0.92;
+        }
+        // Deep island sides turn to stone.
+        if p.y > 20.0 + floor(hash2(vec2<f32>(p.x, 7.0)) * 3.0) {
+            return vec3<f32>(0.5, 0.5, 0.5) * (0.8 + 0.28 * q4(n1));
+        }
+        var dirt = vec3<f32>(0.53, 0.38, 0.26) * (0.82 + 0.26 * q4(n1));
+        if n2 > 0.9 {
+            dirt = vec3<f32>(0.38, 0.27, 0.18);
+        } else if n2 < 0.06 {
+            dirt = vec3<f32>(0.62, 0.48, 0.34);
+        }
+        return dirt;
+    }
+    if mat == 1 {
+        // Planks four pixels tall with dark seams, butt joints staggered, a little grain.
+        let row = floor(p.y / 4.0);
+        let joint = select(0.0, 8.0, fract(row * 0.5) > 0.25) + floor(hash2(vec2<f32>(row, 2.0)) * 2.0) * 4.0;
+        let along = p.x - joint;
+        let seam = fract(p.y / 4.0) * 4.0 > 2.5 || (along - floor(along / 16.0) * 16.0) < 1.0;
+        let grain = 0.88 + 0.16 * q4(hash2(vec2<f32>(floor(p.x / 3.0), p.y)));
+        let wood = vec3<f32>(0.66, 0.52, 0.32) * grain;
+        return select(wood, vec3<f32>(0.44, 0.34, 0.2), seam);
+    }
+    if mat == 2 || mat == 10 {
+        let c = cobble(p, f32(mat));
+        if mat == 10 {
+            // Obsidian: near-black, purple glints.
+            var o = vec3<f32>(0.07, 0.05, 0.11) * (0.8 + 0.5 * q4(c.y));
+            if n1 > 0.93 {
+                o = vec3<f32>(0.36, 0.22, 0.5);
+            }
+            return o;
+        }
+        if c.x < 0.9 {
+            return vec3<f32>(0.3, 0.3, 0.3) * (0.85 + 0.2 * n2);
+        }
+        let stone = 0.47 + 0.16 * q4(c.y) + 0.06 * (q4(n1) - 0.5);
+        // A lit upper-left on each stone.
+        return vec3<f32>(stone) * select(1.0, 1.1, c.x < 1.6 && n2 > 0.5);
+    }
+    if mat == 3 {
+        return vec3<f32>(0.5, 0.5, 0.51) * (0.86 + 0.2 * q4(n1));
+    }
+    if mat == 4 {
+        return vec3<f32>(0.86, 0.81, 0.6) * (0.9 + 0.13 * q4(n1));
+    }
+    if mat == 5 || mat == 6 {
+        let br = bricks(p, 8.0, 4.0);
+        if mat == 5 {
+            if br.x > 0.5 {
+                return vec3<f32>(0.32, 0.32, 0.33);
+            }
+            return vec3<f32>(0.5 + 0.08 * (br.y - 0.5)) * (0.9 + 0.14 * q4(n1));
+        }
+        if br.x > 0.5 {
+            return vec3<f32>(0.62, 0.6, 0.57) * (0.9 + 0.1 * n2);
+        }
+        return vec3<f32>(0.58, 0.28, 0.21) * (0.85 + 0.22 * br.y) * (0.92 + 0.1 * q4(n1));
+    }
+    if mat == 7 {
+        // Prismarine: teal, mottled in slow patches that shift toward blue and green.
+        let blot = q4(vnoise(p / 3.5 + 4.0));
+        let a = vec3<f32>(0.34, 0.6, 0.55);
+        let c = mix(a, vec3<f32>(0.3, 0.48, 0.58), blot);
+        return c * (0.88 + 0.16 * q4(n1));
+    }
+    if mat == 8 {
+        // Purpur: 8-pixel tiles with a dark border and a lighter middle.
+        let t = u - floor(u / 8.0) * 8.0;
+        let edge = min(min(t.x, t.y), min(7.0 - t.x, 7.0 - t.y));
+        let base = vec3<f32>(0.66, 0.48, 0.66) * (0.9 + 0.12 * q4(n1));
+        if edge < 1.0 {
+            return base * 0.72;
+        }
+        return base * select(1.0, 1.06, edge > 1.5);
+    }
+    // Quartz: smooth and pale with a faint bevel round each block.
+    let edge = min(min(u.x, u.y), min(15.0 - u.x, 15.0 - u.y));
+    return vec3<f32>(0.92, 0.89, 0.84) * (0.95 + 0.06 * q4(n1)) * select(1.0, 0.9, edge < 1.0);
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let local = in.uv;
@@ -151,49 +286,38 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(col, 1.0);
     }
 
-    // --- Blocky: pixel-textured voxels ----------------------------------------------------
+    // --- Blocky: Minecraft-like voxels -----------------------------------------------------
     if style == 2 {
         let px = 4.0 * scale;
-        var coord = wp.xz;
+        let mat = i32(b.neon.x + 0.5);
+        // Pixel coordinates: world-aligned on top, counted down from the top edge on the
+        // sides (so side textures, like grass's fringe, hang from the top).
+        var p = floor(wp.xz / px);
         var light = 1.0;
-        if face > 0.5 {
+        let side = face > 0.5;
+        if side {
             let side_x = select(wp.x, wp.z, abs(n.x) > abs(n.z));
-            coord = vec2<f32>(side_x, wp.y);
-            light = select(0.8, 0.62, abs(n.x) > abs(n.z));
+            p = vec2<f32>(floor(side_x / px), floor(h * (1.0 - v) / px));
+            light = select(0.8, 0.6, abs(n.x) > abs(n.z));
         }
-        let cell = floor(coord / px);
-        let noise = floor(hash2(cell + vec2<f32>(f32(shape) * 7.0, 3.0)) * 4.0) / 4.0;
-        var shade = 0.8 + 0.25 * noise;
-        // Planks for people, cobbles for storage: a little texture per kind of thing.
-        if shape == 1 {
-            let row = floor(cell.y / 4.0);
-            let seam = select(1.0, 0.72, fract(cell.y / 4.0) < 0.2);
-            shade = shade * seam * (0.92 + 0.08 * hash2(vec2<f32>(row, 1.0)));
-        } else if shape == 2 {
-            let blob = step(0.62, vnoise(cell / 2.5));
-            shade = shade * (1.0 - 0.18 * blob);
-        }
-        // Seams between voxels every 16 pixels.
-        let vox = fract(coord / (px * 16.0));
-        let seam = min(min(vox.x, 1.0 - vox.x), min(vox.y, 1.0 - vox.y)) * 16.0;
-        if seam < 1.0 {
-            shade = shade * 0.78;
-        }
-        // An opened block becomes a stone floor for its contents to stand out on.
-        let material = mix(b.body.rgb, vec3<f32>(0.42, 0.42, 0.44), 0.7 * opened);
-        var col = material * shade * light;
+        var col = texel(mat, p, side);
         if face < 0.5 {
-            // A pixel icon, and a dark selection outline round a hovered block.
+            // A pixel icon for the element's shape, and the thin black selection box.
             let snapped = (floor(local / px) + 0.5) * px;
             let m = marker(snapped, half, k, shape);
             if m < px * 0.7 && opened < 0.5 {
-                col = col * 0.35;
+                col = col * 0.4;
             }
-            let rim = select(0.0, 1.0, d > -px * 1.2);
-            col = mix(col, vec3<f32>(0.02), rim * max(hover, sel) * 0.85);
+            let rim = select(0.0, 1.0, d > -px * 0.8);
+            col = mix(col, vec3<f32>(0.0), rim * max(hover, sel) * 0.9);
+        } else {
+            let y = v * h;
+            let edge = select(0.0, 1.0, h - y < px * 0.6 || y < px * 0.6);
+            col = mix(col, vec3<f32>(0.0), edge * max(hover, sel) * 0.9);
         }
-        col = col * (1.0 - 0.5 * dim);
-        return vec4<f32>(col, 1.0);
+        col = col * light * (1.0 - 0.5 * dim);
+        // The textures are authored in sRGB; the target wants linear light.
+        return vec4<f32>(pow(col, vec3<f32>(2.2)), 1.0);
     }
 
     // --- Blueprint: white technical linework on blue ----------------------------------------

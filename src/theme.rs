@@ -1,5 +1,5 @@
-//! Visual styles: the neon Tron look, a pen-on-paper sketch, a blocky voxel world, and an
-//! architect's blueprint. Switch with T, from the Esc menu, or start with
+//! Visual styles: the neon Tron look, a pen-on-paper sketch, a blocky voxel world of islands
+//! in the sea, and an architect's blueprint. Switch with T, from the toolbar or View menu, or start with
 //! `--style sketch|blocky|blueprint`.
 
 use bevy::{core_pipeline::tonemapping::Tonemapping, post_process::bloom::Bloom, prelude::*};
@@ -96,10 +96,11 @@ impl Style {
                 Vec4::new(0.97, 0.95, 0.9, 0.96),
                 Vec4::new(0.12, 0.13, 0.2, 1.0),
             ),
+            // Like a floating name tag: white on translucent black.
             Style::Blocky => (
                 Color::WHITE,
-                Vec4::new(0.06, 0.0, 0.06, 0.94),
-                Vec4::new(0.31, 0.0, 1.0, 1.0),
+                Vec4::new(0.0, 0.0, 0.0, 0.55),
+                Vec4::new(0.0, 0.0, 0.0, 0.55),
             ),
             Style::Blueprint => (
                 Color::srgb(0.96, 0.98, 1.0),
@@ -186,7 +187,7 @@ pub fn apply(
                 Style::Blocky => FloorUniform {
                     color: lin(style.background()),
                     p: Vec4::new(4.0, 16.0, 26000.0, 2.0),
-                    base: lin(Color::srgb(0.33, 0.6, 0.2)),
+                    base: lin(Color::srgb(0.16, 0.3, 0.74)),
                 },
                 Style::Blueprint => FloorUniform {
                     color: Vec4::new(0.85, 0.92, 1.0, 1.0),
@@ -206,11 +207,10 @@ pub fn apply(
 /// T cycles the style.
 pub fn keys(
     keys: Res<ButtonInput<KeyCode>>,
-    menu: Res<crate::ui::Menu>,
     code: Res<crate::editor::Code>,
     mut theme: ResMut<Theme>,
 ) {
-    if keys.just_pressed(KeyCode::KeyT) && !menu.open && !code.captures_keys() {
+    if keys.just_pressed(KeyCode::KeyT) && !code.captures_keys() {
         let next = theme.style.next();
         theme.set(next);
     }

@@ -3,8 +3,8 @@
 //! the camera to an element (or, given nothing, fits everything); `up` zooms out a level.
 //! Each step is `<seconds> <action> [arg]`; actions: shot, focus, up, select, relation
 //! (two fqns), hover, unhover, pan (dx dy), orbit (dx dy), zoom (factor), style (name), source, file (name), goto (line col),
-//! type (text), fix, story (view name), next, prev,
-//! pause, menu, exit.
+//! type (text), fix, save, codeclick, blockclick (fqn), story (view name), next, prev,
+//! menu (name), cursor (x y), exit.
 
 use bevy::{
     prelude::*,
@@ -19,6 +19,7 @@ use crate::world::{BlockIndex, Geometry, Heights};
 pub struct Script {
     steps: Vec<(f32, String, String)>,
     next: usize,
+    pointer: Option<Vec2>,
 }
 
 impl Script {
@@ -34,7 +35,7 @@ impl Script {
                 Some((t, action, arg))
             })
             .collect();
-        Some(Script { steps, next: 0 })
+        Some(Script { steps, next: 0, pointer: None })
     }
 }
 
@@ -49,11 +50,12 @@ pub fn run(
     heights: Res<Heights>,
     mut cam: ResMut<Cam>,
     mut queue: ResMut<NavQueue>,
-    mut menu: ResMut<crate::ui::Menu>,
+    mut menu_req: ResMut<crate::chrome::MenuRequest>,
     mut playback: ResMut<crate::story::Playback>,
     mut theme: ResMut<crate::theme::Theme>,
     mut code: ResMut<crate::editor::Code>,
     mut ws: ResMut<crate::workspace::Workspace>,
+    mut jump: ResMut<crate::scene::Jump>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut script) = script else { return };
@@ -96,7 +98,8 @@ pub fn run(
                 cam.drag(c, c + Vec2::new(num(0), num(1)));
             }
             "orbit" => cam.orbit(Vec2::new(num(0), num(1))),
-            "source" | "file" | "goto" | "type" | "fix" | "save" => crate::editor::script(&mut code, &mut ws, &action, &arg),
+            "blockclick" => jump.to_code = id,
+            "source" | "file" | "goto" | "type" | "fix" | "save" | "codeclick" => crate::editor::script(&mut code, &mut ws, &action, &arg),
             "style" => {
                 if let Some(s) = crate::theme::Style::parse(&arg) {
                     theme.set(s);
@@ -107,23 +110,47 @@ pub fn run(
                 cam.zoom_at(c, num(0));
             }
             "story" => {
-                if let Some(i) = diagram.model.views.iter().position(|v| v.name == arg) {
+                if let Some(i) = diagram.model.views.iter().position(|v| v.name == arg || v.title.eq_ignore_ascii_case(&arg)) {
                     playback.start(i);
                 }
             }
-            "next" | "prev" | "pause" => {
+            "next" | "prev" => {
                 let stages = playback.active.and_then(|i| diagram.model.views.get(i)).map_or(0, |v| v.stages().len());
                 match action.as_str() {
                     "next" => playback.next(stages),
-                    "prev" => playback.prev(),
-                    _ => playback.toggle(stages),
+                    _ => playback.prev(),
                 }
             }
-            "menu" => menu.open = !menu.open,
+            // Hover the button under a point (logical pixels) so hover states and tooltips
+            // show, without moving the real pointer: `cursor 40 20`.
+            "cursor" => {
+                let v: Vec<f32> = arg.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+                script.pointer = if let [x, y] = v[..] { Some(Vec2::new(x, y)) } else { None };
+            }
+            // Open a menu (file, view, sequences, style) as if clicked: `menu file`.
+            "menu" => menu_req.0 = Some(arg.clone()),
             "exit" => {
                 exit.write(AppExit::Success);
             }
             _ => {}
+        }
+    }
+}
+
+/// Holds a scripted hover on whichever button is under the scripted pointer.
+pub fn hover(
+    script: Option<Res<Script>>,
+    window: Single<&Window>,
+    mut buttons: Query<(&mut Interaction, &ComputedNode, &UiGlobalTransform), With<Button>>,
+) {
+    let Some(p) = script.and_then(|s| s.pointer) else { return };
+    let p = p * window.scale_factor();
+    for (mut i, node, tf) in &mut buttons {
+        let half = node.size() / 2.0;
+        let c = tf.translation;
+        let inside = (p.x - c.x).abs() <= half.x && (p.y - c.y).abs() <= half.y;
+        if inside && *i == Interaction::None {
+            *i = Interaction::Hovered;
         }
     }
 }

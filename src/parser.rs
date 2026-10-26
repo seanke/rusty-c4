@@ -219,6 +219,8 @@ pub(crate) struct RawElement {
     pub technology: Option<String>,
     pub style: Style,
     pub declared: bool,
+    /// Where its name is written, and the name's length.
+    pub decl: Option<(At, usize)>,
 }
 
 pub(crate) struct RawRelation {
@@ -293,6 +295,8 @@ struct Parser<'a> {
     pos: usize,
     file: String,
     b: &'a mut Builder,
+    /// Where the name of the element being declared is.
+    name_at: Option<At>,
 }
 
 impl Parser<'_> {
@@ -631,6 +635,7 @@ impl Parser<'_> {
                             self.parse_relation(scope, Some(name), Some(at));
                         }
                         Some(Tok::Eq) => {
+                            self.name_at = Some(self.at());
                             self.pos += 2;
                             let kind_at = self.at();
                             if let Some(Tok::Ident(k)) = self.peek(0) {
@@ -667,7 +672,9 @@ impl Parser<'_> {
                         Some(Tok::Ident(el_name)) => {
                             let kind_at = self.at();
                             self.b.kind_uses.push((name.clone(), kind_at));
-                            self.pos += 2;
+                            self.pos += 1;
+                            self.name_at = Some(self.at());
+                            self.pos += 1;
                             self.parse_element(scope, &el_name, &name);
                         }
                         _ => {
@@ -688,9 +695,13 @@ impl Parser<'_> {
             format!("{scope}.{name}")
         };
         let strs = self.strings();
+        let name_at = self.name_at.take();
         let e = self.b.element(&fqn);
         e.kind = kind.to_string();
         e.declared = true;
+        if let Some(at) = name_at {
+            e.decl = Some((at, name.chars().count()));
+        }
         let mut it = strs.into_iter();
         if let Some(t) = it.next() {
             e.title = Some(t);
@@ -925,6 +936,12 @@ fn finish(mut b: Builder) -> (Model, Vec<Diagnostic>) {
             children: Vec::new(),
             shape: style.shape.unwrap_or_default(),
             color,
+            decl: raw.decl.as_ref().map(|(at, len)| Decl {
+                file: at.file.clone(),
+                line: at.line,
+                col: at.col,
+                len: *len,
+            }),
         });
     }
 
@@ -1072,6 +1089,7 @@ fn finish(mut b: Builder) -> (Model, Vec<Diagnostic>) {
             children: model.roots.clone(),
             shape: Shape::Rectangle,
             color: named_color("slate").unwrap(),
+            decl: None,
         });
         model.root = Some(id);
     }
@@ -1130,6 +1148,7 @@ pub fn parse_sources(sources: &[(String, String)]) -> (Model, Vec<Diagnostic>) {
             pos: 0,
             file: file.clone(),
             b: &mut b,
+            name_at: None,
         };
         p.parse_file();
     }

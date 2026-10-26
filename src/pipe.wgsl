@@ -1,7 +1,7 @@
 // A relationship pipe in one of four styles (q.x): 0 a glowing neon tube with bright
-// pulses; 1 an inked outline on paper with ink dashes flowing; 2 a square redstone line with
-// pixel pulses; 3 a white technical outline on blueprint blue. `uv.x` is distance along the
-// pipe in pipe radii, `uv.y` goes round it.
+// pulses; 1 an inked outline on paper with ink dashes flowing; 2 a flat trail of redstone
+// dust with the signal pulsing along it; 3 a white technical outline on blueprint blue.
+// `uv.x` is distance along the pipe in pipe radii, `uv.y` goes round it.
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::{view, globals}
@@ -50,18 +50,19 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(col, 1.0);
     }
     if style == 2 {
-        // Redstone: dark red, lit faces brighter, square pulses of light.
-        let cell = floor(in.uv.x * 1.5);
-        let speck = 0.75 + 0.25 * floor(hash1(cell + floor(in.uv.y * 4.0) * 17.0) * 3.0) / 3.0;
-        let lit = select(0.65, 1.0, n.y > 0.5);
-        let pulse = step(fract((cell / 1.5 - globals.time * pipe.p.w) / spacing), 0.12);
-        var col = vec3<f32>(0.42, 0.04, 0.02) * speck * lit;
-        col = mix(col, vec3<f32>(1.0, 0.15, 0.08), pulse * 0.9);
-        col = col * (1.0 + 0.6 * hl);
+        // Redstone dust: a dull red trail with darker grains, lit up in bright pulses as the
+        // signal runs along it.
+        let cell = floor(in.uv.x * 2.0);
+        let across = floor(in.uv.y * 8.0);
+        let grain = hash1(cell * 3.1 + across * 17.0);
+        var col = vec3<f32>(0.36, 0.02, 0.01) * (0.7 + 0.45 * floor(grain * 3.0) / 3.0);
+        let signal = step(fract((cell / 2.0 - globals.time * pipe.p.w) / spacing), 0.18);
+        let lit = max(signal, 0.55 * hl);
+        col = mix(col, vec3<f32>(1.0, 0.12, 0.04) * (0.8 + 0.3 * grain), lit);
+        col = col * select(0.75, 1.0, n.y > 0.5);
         col = col * (1.0 - 0.6 * dim);
         return vec4<f32>(col, 1.0);
     }
-
     let glow = pipe.color.w * (1.0 + 1.2 * hl) * (1.0 - 0.75 * dim);
     let neon = pipe.color.rgb;
     // A hot core facing the eye, softening toward the silhouette.

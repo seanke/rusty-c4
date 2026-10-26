@@ -212,6 +212,8 @@ fn flowchart(file: &str, lines: &[(usize, &str)], b: &mut Builder) {
     let mut class_colours: HashMap<String, String> = HashMap::new();
     let mut colours: HashMap<String, String> = HashMap::new();
     let mut edges: Vec<Edge> = Vec::new();
+    // Where each node or subgraph is declared: its first appearance, or the first with text.
+    let mut decls: HashMap<String, (At, usize, bool)> = HashMap::new();
     let at = |line: usize, col: usize| At {
         file: file.to_string(),
         line,
@@ -247,6 +249,8 @@ fn flowchart(file: &str, lines: &[(usize, &str)], b: &mut Builder) {
                         Some((p, _)) => format!("{p}.{id}"),
                         None => id.clone(),
                     };
+                    let id_col = col0 + (rest.as_ptr() as usize - st.as_ptr() as usize);
+                    decls.insert(id.clone(), (at(line_no, id_col), id.chars().count(), true));
                     subs.insert(id.clone(), (fqn, title));
                     sub_order.push(id.clone());
                     stack.push(id);
@@ -331,6 +335,10 @@ fn flowchart(file: &str, lines: &[(usize, &str)], b: &mut Builder) {
                     }
                     let home = stack.last().cloned();
                     for n in groups.iter().flatten() {
+                        let better = decls.get(&n.id).is_none_or(|d| !d.2 && n.text.is_some());
+                        if better {
+                            decls.insert(n.id.clone(), (at(line_no, n.col), n.id.chars().count(), n.text.is_some()));
+                        }
                         if !homes.contains_key(&n.id) {
                             homes.insert(n.id.clone(), home.clone());
                             node_order.push(n.id.clone());
@@ -378,6 +386,7 @@ fn flowchart(file: &str, lines: &[(usize, &str)], b: &mut Builder) {
         let (fqn, title) = &subs[id];
         let e = b.element(fqn);
         e.declared = true;
+        e.decl = decls.get(id).map(|(a, l, _)| (a.clone(), *l));
         e.kind = "group".into();
         e.title = Some(title.clone());
         e.style.color = colour(id).or(Some("secondary".into()));
@@ -395,6 +404,7 @@ fn flowchart(file: &str, lines: &[(usize, &str)], b: &mut Builder) {
         let (title, description) = text.map(|t| split_text(&t)).unwrap_or_else(|| (id.clone(), String::new()));
         let e = b.element(&fqn);
         e.declared = true;
+        e.decl = decls.get(id).map(|(a, l, _)| (a.clone(), *l));
         e.kind = match shape {
             Some(Shape::Cylinder) => "database".into(),
             Some(Shape::Queue) => "queue".into(),

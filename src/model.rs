@@ -68,6 +68,17 @@ pub struct Element {
     pub shape: Shape,
     /// RGB in sRGB 0..1.
     pub color: [f32; 3],
+    /// Where its name is written in the source.
+    pub decl: Option<Decl>,
+}
+
+/// A place in a source file: file, 1-based line, and 0-based column and length in characters.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Decl {
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+    pub len: usize,
 }
 
 #[derive(Clone, Debug)]

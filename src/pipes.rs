@@ -26,6 +26,8 @@ use crate::world::{Geometry, Heights, View};
 
 /// Pipe radius, in layout units of the level it runs on.
 const PIPE_R: f32 = 3.6;
+/// How thick the blocky style's dust trails are, as a fraction of their width.
+const DUST_THIN: f32 = 0.18;
 /// Routing grid cell, in layout units.
 const CELL: f32 = 15.0;
 /// How far pipes keep from block walls, in cells.
@@ -794,7 +796,7 @@ fn centre_line(route: &[Waypoint], bridges: &[Waypoint], geometry: &Geometry, he
 }
 
 /// A tube along `line`, with `uv.x` measured in radii along it.
-/// Square in section (and flat on top) for the blocky style.
+/// For the blocky style, a flat strip lying on its surface instead, like a trail of dust.
 fn tube(lines: &[Vec<(Vec3, f32)>], square: bool) -> Mesh {
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     let sides = if square { 4 } else { 10 };
@@ -823,7 +825,14 @@ fn tube(lines: &[Vec<(Vec3, f32)>], square: bool) -> Mesh {
             for k in 0..=sides {
                 let ang = k as f32 / sides as f32 * std::f32::consts::TAU + turn;
                 let o = normal * ang.cos() + binormal * ang.sin();
-                pos.push((p + o * r * if square { std::f32::consts::SQRT_2 } else { 1.0 }).to_array());
+                let at = if square {
+                    // Squashed toward the surface (the binormal points down on level runs).
+                    let flat = normal * ang.cos() + binormal * ang.sin() * DUST_THIN;
+                    p + binormal * (1.0 - DUST_THIN) * r + flat * r * std::f32::consts::SQRT_2
+                } else {
+                    p + o * r
+                };
+                pos.push(at.to_array());
                 // Flat faces for the square tube: the normal of the face this corner leads.
                 let fo = if square {
                     let fa = ang + std::f32::consts::PI / sides as f32;
@@ -857,7 +866,7 @@ fn tube(lines: &[Vec<(Vec3, f32)>], square: bool) -> Mesh {
     mesh
 }
 
-/// Port models: a jack with a glowing ring, or (blocky) a little block with a red cap.
+/// Port models: a jack with a glowing ring, or (blocky) a torch: a stick with a glowing head.
 /// Materials are per style, in `Style` order.
 #[derive(Resource)]
 pub struct PortAssets {
@@ -878,8 +887,8 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
     commands.insert_resource(PortAssets {
         body: meshes.add(Cylinder::new(1.0, 1.0).mesh().resolution(20)),
         ring: meshes.add(Torus::new(0.62, 0.92).mesh().major_resolution(24).minor_resolution(8)),
-        cube: meshes.add(Cuboid::new(1.6, 1.0, 1.6)),
-        cap: meshes.add(Cuboid::new(0.7, 0.5, 0.7)),
+        cube: meshes.add(Cuboid::new(0.32, 1.0, 0.32)),
+        cap: meshes.add(Cuboid::new(0.44, 0.34, 0.44)),
         body_mat: [
             mats.add(StandardMaterial {
                 base_color: Color::srgb(0.02, 0.04, 0.06),
@@ -888,7 +897,7 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
                 ..default()
             }),
             mats.add(flat(Color::srgb(0.97, 0.95, 0.9))),
-            mats.add(flat(Color::srgb(0.5, 0.5, 0.5))),
+            mats.add(flat(Color::srgb(0.47, 0.34, 0.19))),
             mats.add(flat(Style::Blueprint.background())),
         ],
         ring_mat: [
@@ -898,7 +907,7 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
                 ..default()
             }),
             mats.add(flat(Color::srgb(0.1, 0.11, 0.18))),
-            mats.add(flat(Color::srgb(0.95, 0.12, 0.06))),
+            mats.add(flat(Color::srgb(1.0, 0.22, 0.1))),
             mats.add(flat(Color::srgb(0.95, 0.97, 1.0))),
         ],
     });

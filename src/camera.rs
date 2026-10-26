@@ -13,7 +13,7 @@ use bevy::{
 
 use crate::render::Spring;
 
-const FOV: f32 = 0.42;
+pub const FOV: f32 = 0.42;
 pub const DEFAULT_PITCH: f32 = 1.02;
 
 #[derive(Resource)]
@@ -173,10 +173,12 @@ pub fn input(
     mut pinch: MessageReader<PinchGesture>,
     keys: Res<ButtonInput<KeyCode>>,
     code: Res<crate::editor::Code>,
+    chrome: Res<crate::chrome::Chrome>,
 ) {
-    // The 3D view is the window less the source panel, if it's open.
-    cam.viewport = window.size() - Vec2::new(code.split_width(), 0.0);
-    cam.cursor = cam.fake_cursor.or(window.cursor_position());
+    // The 3D view is the window less the toolbar above and the source panel, if open.
+    cam.viewport = (window.size() - Vec2::new(code.split_width(), chrome.top)).max(Vec2::ONE);
+    let real = window.cursor_position().map(|c| c - Vec2::new(0.0, chrome.top)).filter(|c| c.y >= 0.0);
+    cam.cursor = cam.fake_cursor.or(real);
     let anchor = cam.cursor.unwrap_or(cam.viewport / 2.0);
 
     let zoom_mod = keys.any_pressed([

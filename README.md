@@ -13,13 +13,25 @@ comes up through a small port on the platform beside the component it belongs to
 with where it comes from or goes to. Ports and tags are placed so that nothing overlaps.
 
 Four looks to choose from: **Tron** (neon edges on dark glass, with bloom), **Sketch**
-(pen and ink on paper, with hatched sides and handwriting), **Blocky** (pixel-textured
-voxels on grass, redstone pipes and chunky pixel text) and **Blueprint** (white linework on
-cyanotype blue, blocks drawn like walls on a floor plan, technical capitals).
+(pen and ink on paper, with hatched sides and handwriting), **Blocky** (a voxel sandbox:
+islands in a rippling sea, each made of a material picked from its colour — grass and dirt,
+oak planks, cobblestone, stone bricks, prismarine, purpur — joined by redstone dust, with
+torches for ports) and **Blueprint** (white linework on cyanotype blue, blocks drawn like
+walls on a floor plan, technical capitals).
 
-Dynamic views play as stories: pick one from the list and each step sends a pulse of light
-along the pipe between its two blocks, in order, while the camera flies to each step and
-everything not taking part dims.
+Dynamic views are sequences you step through: pick one from the **Sequences** dropdown and
+a numbered list of its steps appears (parallel steps lettered, 3a and 3b). Each step you move
+to sends pulses of light along the pipe between its two blocks while the camera flies there
+and everything not taking part dims.
+
+Databases open up too: zoom into one and its tables stand on it, linked by their foreign keys.
+
+## Toolbar and menus
+
+Everything is on the toolbar along the top (hover an icon for what it does and its shortcut):
+open, save and reload on the left with the sequence picker and step arrows; zoom, fit, style
+and the source panel on the right. On macOS the menus live in the system menu bar; elsewhere
+there is a File / View / Sequences bar in the window.
 
 ## Running
 
@@ -27,7 +39,7 @@ everything not taking part dims.
 cargo run                       # welcome screen: open a folder or file, or drop one in
 cargo run -- path/to/project    # every .c4 / .likec4 file under a directory
 cargo run -- path/to/model.c4   # a single file
-cargo run -- --example          # the built-in example
+cargo run -- --example          # the built-in example (also in examples/cloud)
 cargo run -- --example mermaid  # the built-in Mermaid example
 cargo run -- --style blueprint  # pick a look: tron (default), sketch, blocky or blueprint
 ```
@@ -36,7 +48,7 @@ Files are watched and reloaded on save.
 
 ## Editing
 
-Press ⌘E (or click **Source**, top left) to split the window: the 3D view on the left, the
+Press ⌘E (or the panel icon at the right of the toolbar) to split the window: the 3D view on the left, the
 source on the right (drag the divider to resize). For a project, the files and folders are
 listed down the panel's left; a single Mermaid diagram just gets the editor. The 3D view
 updates as you type.
@@ -50,6 +62,8 @@ updates as you type.
 - Brackets and quotes close themselves, Enter keeps (and after `{`, adds) indentation, and
   ⌘Z / ⌘⇧Z undo and redo. ⌘C / ⌘X / ⌘V use the system clipboard.
 - ⌘S saves every changed file. Esc returns the keys to the 3D view.
+- Click an element's name in the source and the 3D view flies to it; click a block in 3D and
+  the source jumps to where it is declared.
 
 ## Controls
 
@@ -61,10 +75,11 @@ updates as you type.
 | Scroll / pinch               | Zoom                                           |
 | Drag, two-finger scroll      | Pan                                            |
 | Right-drag                   | Orbit and tilt the camera                      |
-| F, Home                      | Fit everything                                 |
-| T                            | Switch style: Tron, Sketch, Blocky, Blueprint (also in the Esc menu) |
-| Space, ← →, Backspace        | While a dynamic view plays: pause, step, stop  |
-| Esc                          | Menu: open another project, reload, quit       |
+| F, Home                      | Fit everything, back at the starting angle     |
+| T                            | Switch style: Tron, Sketch, Blocky, Blueprint  |
+| → or Space, ←                | In a sequence: next step, previous step        |
+| Esc                          | Close details, then leave the sequence         |
+| ⌘O, ⇧⌘O, ⌘S, ⌘R, ⌘E, ⌘Q      | Open folder, open file, save, reload, source panel, quit (Ctrl elsewhere) |
 
 ## Mermaid
 

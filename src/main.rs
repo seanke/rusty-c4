@@ -4,9 +4,12 @@
 //! or `rustyc4 --example` for the built-in example. With neither it opens to a welcome
 //! screen. Files are watched and reloaded on save.
 
+mod actions;
 mod camera;
+mod chrome;
 mod detail;
 mod editor;
+mod icons;
 mod labels;
 mod layout;
 mod mermaid;
@@ -105,7 +108,6 @@ fn main() {
         keep_view: false,
     })
     .insert_resource(NavQueue(source.map(Nav::Load).into_iter().collect()))
-    .init_resource::<ui::Menu>()
     .init_resource::<detail::DetailView>()
     .init_resource::<ui::PendingDialog>()
     .init_resource::<Cam>()
@@ -119,13 +121,18 @@ fn main() {
     .init_resource::<pipes::PipeState>()
     .init_resource::<story::Playback>()
     .init_resource::<workspace::Workspace>()
+    .init_resource::<scene::Jump>()
+    .insert_resource(chrome::Chrome::new())
+    .init_resource::<actions::Actions>()
+    .init_resource::<chrome::Popup>()
+    .init_resource::<chrome::MenuRequest>()
     .insert_resource(theme::Theme { style, version: 0 })
-    .add_systems(Startup, (scene::setup, labels::setup, pipes::setup, ui::spawn, story::setup, story::spawn_ui, editor::setup).chain())
+    .add_systems(Startup, (icons::setup, scene::setup, labels::setup, pipes::setup, ui::spawn, chrome::spawn, story::setup, story::spawn_ui, editor::setup).chain())
     .add_systems(
         Update,
         (
+            (script::run, script::hover, actions::shortcuts, chrome::interact, ui::welcome_buttons).chain(),
             (
-                script::run,
                 // The editor takes the keys first when it has focus.
                 editor::input,
                 camera::input,
@@ -135,6 +142,7 @@ fn main() {
                 story::ui,
                 scene::watch_files,
                 workspace::live,
+                actions::run,
                 scene::apply_nav,
                 theme::apply,
                 world::auto_open,
@@ -153,8 +161,6 @@ fn main() {
                 story::draw,
                 labels::update,
                 ui::update,
-                ui::menu_buttons,
-                ui::style_buttons,
                 editor::draw,
                 editor::split,
                 ui::file_drop,
@@ -166,6 +172,9 @@ fn main() {
             .chain(),
     )
     ;
+    #[cfg(target_os = "macos")]
+    app.add_systems(Startup, chrome::native::setup)
+        .add_systems(Update, chrome::native::update.before(actions::run));
     if let Some(s) = script::Script::from_env() {
         app.insert_resource(s);
     }

@@ -1,39 +1,26 @@
-//! Screen-space overlay: hints, warnings, the welcome screen and pause menu.
+//! Screen-space overlay: warnings, the welcome screen, file dialogs and drag-and-drop.
 
 use bevy::{ecs::system::NonSendMarker, prelude::*, window::FileDragAndDrop};
 
+use crate::actions::{Actions, AppAction};
+use crate::chrome::Chrome;
 use crate::scene::{Diagram, Fonts, Nav, NavQueue, Source, ACCENT, MUTED, TEXT};
+use crate::workspace::Example;
 
 const HAIRLINE: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
 
 #[derive(Component)]
 pub struct WarnText;
 
-/// Shown only while a model is open (hints).
+/// Shown only while a model is open.
 #[derive(Component)]
 pub struct WhenLoaded;
 
 #[derive(Component)]
 pub struct Welcome;
 
-/// The hint bar along the bottom.
-#[derive(Component)]
-pub struct HintBar;
-
-#[derive(Component)]
-pub struct PauseMenu;
-
-#[derive(Component)]
-pub struct MenuTitle;
-
 #[derive(Component)]
 pub struct ErrorText;
-
-/// The pause menu, toggled with Esc while a model is open.
-#[derive(Resource, Default)]
-pub struct Menu {
-    pub open: bool,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Dialog {
@@ -45,20 +32,19 @@ pub enum Dialog {
 #[derive(Resource, Default)]
 pub struct PendingDialog(Option<Dialog>);
 
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    Resume,
-    Style(crate::theme::Style),
-    OpenFolder,
-    OpenFile,
-    Example,
-    MermaidExample,
-    Reload,
-    Quit,
+impl PendingDialog {
+    pub fn set(&mut self, d: Dialog) {
+        self.0 = Some(d);
+    }
 }
+
+/// What a welcome-screen button does.
+#[derive(Component, Clone, Copy, PartialEq)]
+pub struct Action(AppAction);
 
 const BUTTON: Color = Color::srgba(1.0, 1.0, 1.0, 0.06);
 const BUTTON_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
+
 const BUTTON_PRIMARY: Color = Color::srgb(0.27, 0.42, 0.85);
 const BUTTON_PRIMARY_HOVER: Color = Color::srgb(0.33, 0.49, 0.93);
 
@@ -89,38 +75,11 @@ fn font(fonts: &Fonts, size: f32, weight: FontWeight) -> TextFont {
     }
 }
 
-pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
+pub fn spawn(mut commands: Commands, fonts: Res<Fonts>, chrome: Res<Chrome>) {
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            bottom: px(14),
-            left: px(0),
-            right: px(0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        WhenLoaded,
-        HintBar,
-        children![(
-            Node {
-                padding: UiRect::axes(px(14), px(5)),
-                border_radius: BorderRadius::all(px(10)),
-                ..default()
-            },
-            // A backing, so the hints read on light styles too.
-            BackgroundColor(Color::srgba(0.02, 0.03, 0.05, 0.55)),
-            Text::new(
-                "scroll / pinch  zoom      drag  pan      right-drag  orbit      click  fly to      backspace / right-click  zoom out      f  fit      t  style      esc  menu"
-            ),
-            font(&fonts, 12.0, FontWeight::MEDIUM),
-            TextColor(Color::srgba(0.85, 0.88, 0.95, 0.6)),
-        )],
-    ));
-
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: px(40),
+            bottom: px(16),
             left: px(18),
             max_width: px(560),
             ..default()
@@ -134,7 +93,7 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
     // Welcome screen, shown until something is opened.
     commands
         .spawn((
-            overlay(Color::NONE),
+            overlay(Color::NONE, chrome.top),
             Welcome,
         ))
         .with_children(|o| {
@@ -157,8 +116,8 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
                     ..default()
                 })
                 .with_children(|row| {
-                    row.spawn(button(&fonts, "Open folder…", Action::OpenFolder, true));
-                    row.spawn(button(&fonts, "Open file…", Action::OpenFile, false));
+                    row.spawn(button(&fonts, "Open folder…", Action(AppAction::OpenFolder), true));
+                    row.spawn(button(&fonts, "Open file…", Action(AppAction::OpenFile), false));
                 });
                 c.spawn((
                     Node {
@@ -175,53 +134,8 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>) {
                     ..default()
                 })
                 .with_children(|row| {
-                    row.spawn(link(&fonts, "Try the example", Action::Example));
-                    row.spawn(link(&fonts, "Try the Mermaid example", Action::MermaidExample));
-                });
-            });
-        });
-
-    // Pause menu.
-    commands
-        .spawn((
-            overlay(Color::srgba(0.02, 0.025, 0.035, 0.62)),
-            Visibility::Hidden,
-            PauseMenu,
-        ))
-        .with_children(|o| {
-            o.spawn(card()).with_children(|c| {
-                c.spawn((
-                    Text::new(""),
-                    font(&fonts, 22.0, FontWeight::BOLD),
-                    TextColor(TEXT),
-                    MenuTitle,
-                ));
-                c.spawn(error_line(&fonts));
-                c.spawn(Node {
-                    flex_direction: FlexDirection::Column,
-                    row_gap: px(8),
-                    margin: UiRect::top(px(12)),
-                    width: percent(100),
-                    ..default()
-                })
-                .with_children(|col| {
-                    col.spawn(button(&fonts, "Resume", Action::Resume, true));
-                    col.spawn(button(&fonts, "Open folder…", Action::OpenFolder, false));
-                    col.spawn(button(&fonts, "Open file…", Action::OpenFile, false));
-                    col.spawn(button(&fonts, "Reload", Action::Reload, false));
-                    // Style: one button per look, side by side.
-                    col.spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        column_gap: px(6),
-                        margin: UiRect::vertical(px(4)),
-                        ..default()
-                    })
-                    .with_children(|row| {
-                        for s in crate::theme::Style::ALL {
-                            row.spawn(button(&fonts, s.name(), Action::Style(s), false)).insert(StyleButton(s));
-                        }
-                    });
-                    col.spawn(button(&fonts, "Quit", Action::Quit, false));
+                    row.spawn(link(&fonts, "Try the example", Action(AppAction::OpenExample(Example::Cloud))));
+                    row.spawn(link(&fonts, "Try the Mermaid example", Action(AppAction::OpenExample(Example::Mermaid))));
                 });
             });
         });
@@ -240,12 +154,14 @@ pub fn update(diagram: Res<Diagram>, mut state: ResMut<UiState>, mut warn: Singl
     }
 }
 
-fn overlay(bg: Color) -> impl Bundle {
+fn overlay(bg: Color, top: f32) -> impl Bundle {
     (
         Node {
             position_type: PositionType::Absolute,
-            width: percent(100),
-            height: percent(100),
+            top: px(top),
+            left: px(0),
+            right: px(0),
+            bottom: px(0),
             align_items: AlignItems::Center,
             justify_content: JustifyContent::Center,
             ..default()
@@ -348,59 +264,17 @@ fn link(fonts: &Fonts, label: &str, action: Action) -> impl Bundle {
     )
 }
 
-/// One of the style buttons in the menu.
-#[derive(Component)]
-pub struct StyleButton(crate::theme::Style);
-
-/// Show which style is in use.
-pub fn style_buttons(
-    theme: Res<crate::theme::Theme>,
-    mut buttons: Query<(&StyleButton, &mut Look, &mut BackgroundColor)>,
-    mut last: Local<Option<u64>>,
-    added: Query<(), Added<StyleButton>>,
-) {
-    if *last == Some(theme.version) && added.is_empty() {
-        return;
-    }
-    *last = Some(theme.version);
-    for (b, mut look, mut bg) in &mut buttons {
-        let on = b.0 == theme.style;
-        look.base = if on { BUTTON_PRIMARY } else { BUTTON };
-        look.hover = if on { BUTTON_PRIMARY_HOVER } else { BUTTON_HOVER };
-        bg.0 = look.base;
-    }
-}
-
-pub fn menu_buttons(
+pub fn welcome_buttons(
     mut buttons: Query<(&Interaction, &Action, &Look, &mut BackgroundColor), Changed<Interaction>>,
-    mut menu: ResMut<Menu>,
-    mut pending: ResMut<PendingDialog>,
-    mut queue: ResMut<NavQueue>,
-    mut theme: ResMut<crate::theme::Theme>,
-    mut exit: MessageWriter<AppExit>,
+    mut actions: ResMut<Actions>,
 ) {
     for (interaction, action, look, mut bg) in &mut buttons {
         bg.0 = match interaction {
             Interaction::None => look.base,
             _ => look.hover,
         };
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        match action {
-            Action::Resume => menu.open = false,
-            Action::Style(s) => theme.set(*s),
-            Action::OpenFolder => pending.0 = Some(Dialog::Folder),
-            Action::OpenFile => pending.0 = Some(Dialog::File),
-            Action::Example => queue.0.push(Nav::Load(Source::Example(crate::workspace::Example::Cloud))),
-            Action::MermaidExample => queue.0.push(Nav::Load(Source::Example(crate::workspace::Example::Mermaid))),
-            Action::Reload => {
-                queue.0.push(Nav::Reload);
-                menu.open = false;
-            }
-            Action::Quit => {
-                exit.write(AppExit::Success);
-            }
+        if *interaction == Interaction::Pressed {
+            actions.0.push(action.0);
         }
     }
 }
@@ -410,7 +284,6 @@ pub fn dialogs(
     _main_thread: NonSendMarker,
     mut pending: ResMut<PendingDialog>,
     mut queue: ResMut<NavQueue>,
-    mut menu: ResMut<Menu>,
 ) {
     let Some(kind) = pending.0.take() else { return };
     let picked = match kind {
@@ -424,43 +297,32 @@ pub fn dialogs(
     };
     if let Some(path) = picked {
         queue.0.push(Nav::Load(Source::Path(path)));
-        menu.open = false;
     }
 }
 
-pub fn file_drop(
-    mut drops: MessageReader<FileDragAndDrop>,
-    mut queue: ResMut<NavQueue>,
-    mut menu: ResMut<Menu>,
-) {
+pub fn file_drop(mut drops: MessageReader<FileDragAndDrop>, mut queue: ResMut<NavQueue>) {
     for drop in drops.read() {
         if let FileDragAndDrop::DroppedFile { path_buf, .. } = drop {
             queue.0.push(Nav::Load(Source::Path(path_buf.clone())));
-            menu.open = false;
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn overlays(
     diagram: Res<Diagram>,
-    menu: Res<Menu>,
-    mut welcome: Single<&mut Visibility, (With<Welcome>, Without<PauseMenu>)>,
-    mut pause: Single<&mut Visibility, (With<PauseMenu>, Without<Welcome>)>,
-    mut loaded_only: Query<&mut Visibility, (With<WhenLoaded>, Without<Welcome>, Without<PauseMenu>)>,
-    mut title: Single<&mut Text, With<MenuTitle>>,
-    mut errors: Query<&mut Text, (With<ErrorText>, Without<MenuTitle>)>,
+    mut welcome: Single<&mut Visibility, With<Welcome>>,
+    mut loaded_only: Query<&mut Visibility, (With<WhenLoaded>, Without<Welcome>)>,
+    mut errors: Query<&mut Text, With<ErrorText>>,
     mut window: Single<&mut Window>,
-    mut last: Local<Option<(bool, bool, u64)>>,
+    mut last: Local<Option<(bool, u64)>>,
 ) {
-    let state = (diagram.loaded, menu.open, diagram.version);
+    let state = (diagram.loaded, diagram.version);
     if *last == Some(state) {
         return;
     }
     *last = Some(state);
     let show = |v: bool| if v { Visibility::Inherited } else { Visibility::Hidden };
     **welcome = show(!diagram.loaded);
-    **pause = show(diagram.loaded && menu.open);
     for mut v in &mut loaded_only {
         *v = show(diagram.loaded);
     }
@@ -473,7 +335,6 @@ pub fn overlays(
         None if diagram.loaded => "example".to_string(),
         None => String::new(),
     };
-    title.0 = name.clone();
     for mut t in &mut errors {
         t.0 = diagram.error.clone().unwrap_or_default();
     }

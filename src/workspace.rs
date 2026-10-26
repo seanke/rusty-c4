@@ -74,7 +74,13 @@ pub enum Example {
 impl Example {
     pub fn files(self) -> Vec<(&'static str, &'static str)> {
         match self {
-            Example::Cloud => vec![("cloud.c4", include_str!("../examples/cloud.c4"))],
+            Example::Cloud => vec![
+                ("specification.c4", include_str!("../examples/cloud/specification.c4")),
+                ("model/landscape.c4", include_str!("../examples/cloud/model/landscape.c4")),
+                ("model/shop.c4", include_str!("../examples/cloud/model/shop.c4")),
+                ("model/operations.c4", include_str!("../examples/cloud/model/operations.c4")),
+                ("views/scenarios.c4", include_str!("../examples/cloud/views/scenarios.c4")),
+            ],
             // A single Mermaid diagram; open the `examples/mermaid` folder for the sequence
             // diagram that goes with it.
             Example::Mermaid => vec![("platform.mmd", include_str!("../examples/mermaid/platform.mmd"))],

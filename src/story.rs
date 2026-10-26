@@ -1,7 +1,8 @@
-//! Playing dynamic views. A view is a scenario told step by step: each step sends a bright
-//! pulse along the pipe between its two blocks, in order (steps in a `parallel` block go
-//! together). The camera walks to whichever level a step happens on and frames it, and
-//! everything not taking part is dimmed.
+//! Stepping through dynamic views ("sequences"). A sequence is a scenario told step by step;
+//! you move through it yourself, from the numbered step list or with ← and →. Each step sends
+//! a bright pulse (again and again) along the pipe between its two blocks (steps in a
+//! `parallel` block go together), the camera flies to where it happens, and everything not
+//! taking part is dimmed.
 
 use std::collections::HashSet;
 
@@ -13,16 +14,15 @@ use crate::pipes::{visible_rep, Pipe};
 use crate::scene::{Diagram, Fonts, ACCENT, MUTED, TEXT};
 use crate::world::{Block, Geometry, Heights, View};
 
-/// Seconds for a pulse to travel its pipe, and to linger before the next step.
+/// Seconds for a pulse to travel its pipe, and to rest before it goes again.
 const TRAVEL: f32 = 1.3;
-const HOLD: f32 = 0.9;
+const REST: f32 = 0.7;
 
 #[derive(Resource, Default)]
 pub struct Playback {
     /// The dynamic view playing (index into the model's views).
     pub active: Option<usize>,
     pub stage: usize,
-    pub playing: bool,
     /// Bumped when the active view changes, so pipes are re-routed with its steps.
     pub version: u64,
     /// Progress of the current stage's pulses (0..1), then time spent after arriving.
@@ -38,26 +38,22 @@ impl Playback {
     pub fn start(&mut self, view: usize) {
         self.active = Some(view);
         self.stage = 0;
-        self.playing = true;
         self.version += 1;
         self.reset_stage();
     }
 
     pub fn stop(&mut self) {
         if self.active.take().is_some() {
-            self.playing = false;
             self.version += 1;
             self.current.clear();
         }
     }
 
-    pub fn toggle(&mut self, stages: usize) {
-        if !self.playing && self.stage + 1 >= stages && self.t >= 1.0 {
-            // At the end: play again from the top.
-            self.stage = 0;
+    pub fn go_to(&mut self, stage: usize) {
+        if stage != self.stage {
+            self.stage = stage;
             self.reset_stage();
         }
-        self.playing = !self.playing;
     }
 
     pub fn next(&mut self, stages: usize) {
@@ -102,10 +98,6 @@ pub fn drive(
     let stages = dv.stages();
     if pb.stage >= stages.len() {
         pb.stage = stages.len().saturating_sub(1);
-    }
-    // Opening a detail card pauses the story.
-    if diagram.detail.is_some() {
-        pb.playing = false;
     }
     let steps: Vec<&Step> = stages[pb.stage].iter().map(|&i| &dv.steps[i]).collect();
     // Fly to frame both ends of the step(s), as they will stand once their containers open.
@@ -172,17 +164,14 @@ pub fn drive(
         .all(|k| pipes.iter().any(|p| p.is_trunk() && p.links.contains(k) && p.ready()));
     if settled && pipes_ready {
         let dt = time.delta_secs().min(0.05);
+        // The pulse runs, rests, and runs again, until you move on.
         if pb.t < 1.0 {
             pb.t = (pb.t + dt / TRAVEL).min(1.0);
         } else {
             pb.hold += dt;
-            if pb.playing && pb.hold > HOLD {
-                if pb.stage + 1 < stages.len() {
-                    pb.stage += 1;
-                    pb.reset_stage();
-                } else {
-                    pb.playing = false;
-                }
+            if pb.hold > REST {
+                pb.t = 0.0;
+                pb.hold = 0.0;
             }
         }
     }
@@ -306,23 +295,23 @@ pub fn draw(
 
 // --- UI ------------------------------------------------------------------------------------
 
-const PANEL_BG: Color = Color::srgba(0.01, 0.03, 0.05, 0.9);
-const EDGE: Color = Color::srgba(0.2, 0.9, 1.0, 0.25);
+const PANEL_BG: Color = Color::srgb(0.045, 0.052, 0.07);
+const EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
+
+/// The step list, shown while a sequence is open.
+#[derive(Component)]
+pub struct StepsPanel;
 
 #[derive(Component)]
-pub struct ViewsPanel;
+pub struct StepsTitle;
 
 #[derive(Component)]
-pub struct PlayerBar;
-
-#[derive(Component)]
-pub struct Caption;
+pub struct StepsList;
 
 #[derive(Component, Clone, Copy, PartialEq)]
-pub enum StoryButton {
-    View(usize),
+pub enum StepButton {
+    Go(usize),
     Prev,
-    Toggle,
     Next,
     Close,
 }
@@ -336,91 +325,105 @@ fn font(fonts: &Fonts, size: f32, weight: FontWeight) -> TextFont {
     }
 }
 
-fn button(fonts: &Fonts, label: &str, action: StoryButton, wide: bool) -> impl Bundle {
+fn icon_button(icons: &crate::icons::Icons, icon: crate::icons::Icon, action: StepButton) -> impl Bundle {
     (
         Button,
         Node {
-            padding: UiRect::axes(px(if wide { 14 } else { 12 }), px(7)),
-            justify_content: if wide { JustifyContent::FlexStart } else { JustifyContent::Center },
-            min_width: px(if wide { 0 } else { 44 }),
-            border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(8)),
+            width: px(26),
+            height: px(24),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            border_radius: BorderRadius::all(px(5)),
             ..default()
         },
         BackgroundColor(Color::NONE),
-        BorderColor::all(Color::NONE),
         action,
-        children![(Text::new(label), font(fonts, 14.0, FontWeight::MEDIUM), TextColor(TEXT))],
+        children![(
+            ImageNode::new(icons.get(icon)).with_color(Color::srgba(0.86, 0.9, 0.97, 0.85)),
+            Node {
+                width: px(14),
+                height: px(14),
+                ..default()
+            },
+        )],
     )
 }
 
-pub fn spawn_ui(mut commands: Commands, fonts: Res<Fonts>) {
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(16),
-            right: px(16),
-            flex_direction: FlexDirection::Column,
-            row_gap: px(2),
-            padding: UiRect::all(px(8)),
-            border: UiRect::all(px(1)),
-            border_radius: BorderRadius::all(px(12)),
-            ..default()
-        },
-        BackgroundColor(PANEL_BG),
-        BorderColor::all(EDGE),
-        Interaction::default(),
-        Visibility::Hidden,
-        ViewsPanel,
-    ));
+pub fn spawn_ui(mut commands: Commands, fonts: Res<Fonts>, icons: Res<crate::icons::Icons>, chrome: Res<crate::chrome::Chrome>) {
+    use crate::icons::Icon;
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                bottom: px(42),
-                left: px(0),
-                right: px(0),
-                justify_content: JustifyContent::Center,
+                top: px(chrome.top + 12.0),
+                left: px(12),
+                width: px(360),
+                max_height: percent(70),
+                flex_direction: FlexDirection::Column,
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(10)),
+                overflow: Overflow::clip(),
                 ..default()
             },
+            BackgroundColor(PANEL_BG),
+            BorderColor::all(EDGE),
+            Interaction::default(),
             Visibility::Hidden,
-            PlayerBar,
+            StepsPanel,
         ))
-        .with_children(|outer| {
-            outer
-                .spawn((
+        .with_children(|p| {
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                padding: UiRect::new(px(12), px(6), px(8), px(8)),
+                column_gap: px(2),
+                border: UiRect::bottom(px(1)),
+                ..default()
+            })
+            .insert(BorderColor::all(EDGE))
+            .with_children(|h| {
+                h.spawn((
                     Node {
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Center,
-                        column_gap: px(6),
-                        padding: UiRect::axes(px(10), px(8)),
-                        border: UiRect::all(px(1)),
-                        border_radius: BorderRadius::all(px(14)),
-                        max_width: px(900),
+                        flex_grow: 1.0,
                         ..default()
                     },
-                    BackgroundColor(PANEL_BG),
-                    BorderColor::all(EDGE),
-                    Interaction::default(),
-                ))
-                .with_children(|bar| {
-                    bar.spawn(button(&fonts, "‹", StoryButton::Prev, false));
-                    bar.spawn(button(&fonts, "Pause", StoryButton::Toggle, false));
-                    bar.spawn(button(&fonts, "›", StoryButton::Next, false));
-                    bar.spawn((
-                        Node {
-                            margin: UiRect::horizontal(px(10)),
-                            min_width: px(320),
-                            ..default()
-                        },
-                        Text::new(""),
-                        font(&fonts, 13.0, FontWeight::MEDIUM),
-                        TextColor(MUTED),
-                        Caption,
-                    ));
-                    bar.spawn(button(&fonts, "×", StoryButton::Close, false));
-                });
+                    Text::new(""),
+                    font(&fonts, 13.0, FontWeight::SEMIBOLD),
+                    TextColor(TEXT),
+                    StepsTitle,
+                ));
+                h.spawn(icon_button(&icons, Icon::ChevronLeft, StepButton::Prev));
+                h.spawn(icon_button(&icons, Icon::ChevronRight, StepButton::Next));
+                h.spawn(icon_button(&icons, Icon::Close, StepButton::Close));
+            });
+            p.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(px(6)),
+                    row_gap: px(1),
+                    overflow: Overflow::scroll_y(),
+                    ..default()
+                },
+                ScrollPosition::default(),
+                StepsList,
+            ));
         });
+}
+
+/// Step numbers: parallel steps share a number, lettered.
+fn numbering(dv: &crate::model::DynamicView) -> Vec<String> {
+    let stages = dv.stages();
+    let mut out = vec![String::new(); dv.steps.len()];
+    for (n, stage) in stages.iter().enumerate() {
+        for (k, &i) in stage.iter().enumerate() {
+            out[i] = if stage.len() > 1 {
+                format!("{}{}", n + 1, (b'a' + k as u8) as char)
+            } else {
+                format!("{}", n + 1)
+            };
+        }
+    }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -428,116 +431,103 @@ pub fn ui(
     mut commands: Commands,
     diagram: Res<Diagram>,
     fonts: Res<Fonts>,
-    menu: Res<crate::ui::Menu>,
     mut pb: ResMut<Playback>,
-    panel: Single<(Entity, &mut Visibility), (With<ViewsPanel>, Without<PlayerBar>)>,
-    mut bar: Single<&mut Visibility, (With<PlayerBar>, Without<ViewsPanel>)>,
-    mut caption: Single<&mut Text, With<Caption>>,
-    mut buttons: Query<(&Interaction, &StoryButton, &mut BackgroundColor), Changed<Interaction>>,
-    all_buttons: Query<(&StoryButton, &Children)>,
-    mut labels: Query<&mut Text, Without<Caption>>,
-    mut colors: Query<&mut TextColor>,
-    mut built: Local<Option<(u64, usize)>>,
+    mut panel: Single<&mut Visibility, With<StepsPanel>>,
+    mut title: Single<&mut Text, With<StepsTitle>>,
+    list: Single<Entity, With<StepsList>>,
+    mut buttons: Query<(&Interaction, &StepButton, &mut BackgroundColor)>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut built: Local<Option<(u64, u64, Option<usize>)>>,
 ) {
     let model = &diagram.model;
-    let (panel_e, mut panel_vis) = panel.into_inner();
-    let show = diagram.loaded && !menu.open;
-
-    // The list of dynamic views (rebuilt for each model).
-    if *built != Some((diagram.resets, model.views.len())) {
-        *built = Some((diagram.resets, model.views.len()));
-        pb.stop();
-        commands.entity(panel_e).despawn_related::<Children>();
-        commands.spawn((
-            Node {
-                padding: UiRect::axes(px(14), px(6)),
-                ..default()
-            },
-            Text::new("DYNAMIC VIEWS"),
-            font(&fonts, 11.0, FontWeight::SEMIBOLD),
-            TextColor(MUTED),
-            ChildOf(panel_e),
-        ));
-        for (i, v) in model.views.iter().enumerate() {
-            commands.spawn((button(&fonts, &v.title, StoryButton::View(i), true), ChildOf(panel_e)));
+    if *built != Some((diagram.resets, diagram.version, pb.active)) {
+        let new_model = built.is_none_or(|(r, _, _)| r != diagram.resets);
+        *built = Some((diagram.resets, diagram.version, pb.active));
+        if new_model && pb.active.is_some_and(|i| i >= model.views.len()) {
+            pb.stop();
         }
-    }
-    let want = if show && !model.views.is_empty() { Visibility::Inherited } else { Visibility::Hidden };
-    if *panel_vis != want {
-        *panel_vis = want;
-    }
-
-    let stages = pb.active.and_then(|i| model.views.get(i)).map_or(0, |v| v.stages().len());
-    for (interaction, action, mut bg) in &mut buttons {
-        bg.0 = match interaction {
-            Interaction::None => Color::NONE,
-            _ => Color::srgba(0.2, 0.9, 1.0, 0.12),
-        };
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        match action {
-            StoryButton::View(i) => {
-                if pb.active == Some(*i) {
-                    pb.stop();
-                } else {
-                    pb.start(*i);
+        commands.entity(*list).despawn_related::<Children>();
+        if let Some(dv) = pb.active.and_then(|i| model.views.get(i)) {
+            let numbers = numbering(dv);
+            for (i, s) in dv.steps.iter().enumerate() {
+                let stage = dv.stages().iter().position(|st| st.contains(&i)).unwrap_or(0);
+                let (a, b) = (&model.elements[s.from].title, &model.elements[s.to].title);
+                let mut what = format!("{a} → {b}");
+                if s.backward {
+                    what.push_str("  (reply)");
                 }
+                commands.spawn((
+                    Button,
+                    Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: px(10),
+                        padding: UiRect::axes(px(8), px(6)),
+                        border_radius: BorderRadius::all(px(6)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    StepButton::Go(stage),
+                    ChildOf(*list),
+                    children![
+                        (
+                            Node {
+                                width: px(26),
+                                ..default()
+                            },
+                            Text::new(numbers[i].clone()),
+                            font(&fonts, 12.5, FontWeight::SEMIBOLD),
+                            TextColor(ACCENT),
+                        ),
+                        (
+                            Node {
+                                flex_direction: FlexDirection::Column,
+                                flex_shrink: 1.0,
+                                ..default()
+                            },
+                            children![
+                                (
+                                    Text::new(if s.title.is_empty() { what.clone() } else { s.title.clone() }),
+                                    font(&fonts, 13.0, FontWeight::MEDIUM),
+                                    TextColor(TEXT),
+                                ),
+                                (
+                                    Text::new(if s.title.is_empty() { String::new() } else { what }),
+                                    font(&fonts, 11.5, FontWeight::NORMAL),
+                                    TextColor(MUTED),
+                                ),
+                            ],
+                        ),
+                    ],
+                ));
             }
-            StoryButton::Prev => pb.prev(),
-            StoryButton::Next => pb.next(stages),
-            StoryButton::Toggle => pb.toggle(stages),
-            StoryButton::Close => pb.stop(),
-        }
-    }
-
-    // Mark the playing view in the list, and the play / pause label.
-    for (action, children) in &all_buttons {
-        let Some(&child) = children.first() else { continue };
-        match action {
-            StoryButton::View(i) => {
-                if let Ok(mut c) = colors.get_mut(child) {
-                    c.0 = if pb.active == Some(*i) { ACCENT } else { TEXT };
-                }
-            }
-            StoryButton::Toggle => {
-                if let Ok(mut t) = labels.get_mut(child) {
-                    let at_end = pb.stage + 1 >= stages && pb.t >= 1.0;
-                    let label = if pb.playing { "Pause" } else if at_end { "Replay" } else { "Play" };
-                    if t.0 != label {
-                        t.0 = label.to_string();
-                    }
-                }
-            }
-            _ => {}
         }
     }
 
     let Some(dv) = pb.active.and_then(|i| model.views.get(i)) else {
-        **bar = Visibility::Hidden;
+        **panel = Visibility::Hidden;
         return;
     };
-    **bar = if show { Visibility::Inherited } else { Visibility::Hidden };
-    let stage_steps = dv.stages().get(pb.stage).cloned().unwrap_or_default();
-    let mut text = format!("{}   ·   step {} of {}", dv.title, pb.stage + 1, stages);
-    if !dv.description.is_empty() {
-        text.push_str(&format!("   ·   {}", dv.description));
+    **panel = Visibility::Inherited;
+    let stages = dv.stages().len();
+    let head = format!("{}   ·   {} / {}", dv.title, pb.stage + 1, stages);
+    if title.0 != head {
+        title.0 = head;
     }
-    for i in stage_steps {
-        let s = &dv.steps[i];
-        let (a, b) = (&model.elements[s.from].title, &model.elements[s.to].title);
-        text.push_str(&format!("\n{a}  →  {b}"));
-        if !s.title.is_empty() {
-            text.push_str(&format!("     {}", s.title));
+
+    for (i, b, mut bg) in &mut buttons {
+        let current = matches!(b, StepButton::Go(s) if *s == pb.stage);
+        bg.0 = match i {
+            Interaction::None if current => Color::srgba(0.35, 0.6, 1.0, 0.25),
+            Interaction::None => Color::NONE,
+            _ => Color::srgba(1.0, 1.0, 1.0, 0.08),
+        };
+        if *i == Interaction::Pressed && mouse.just_pressed(MouseButton::Left) {
+            match b {
+                StepButton::Go(s) => pb.go_to(*s),
+                StepButton::Prev => pb.prev(),
+                StepButton::Next => pb.next(stages),
+                StepButton::Close => pb.stop(),
+            }
         }
-        if !s.technology.is_empty() {
-            text.push_str(&format!("  [{}]", s.technology));
-        }
-        if s.backward {
-            text.push_str("  (reply)");
-        }
-    }
-    if caption.0 != text {
-        caption.0 = text;
     }
 }

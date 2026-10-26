@@ -1,0 +1,47 @@
+// Scenarios to step through, one step at a time.
+
+views {
+  dynamic view checkout {
+    title 'Checkout'
+    description 'A customer pays for what is in their cart'
+
+    customer -> shop.web 'opens their cart'
+    shop.web -> shop.gateway 'POST /checkout'
+    shop.gateway -> shop.orders.checkout 'place order'
+    shop.orders.checkout -> shop.orders.cart 'read cart'
+    shop.orders.checkout -> payments 'charge card'
+    shop.orders.checkout <- payments 'payment confirmed'
+    parallel {
+      shop.orders.checkout -> shop.orders.ordersDb.orders 'save order'
+      shop.orders.checkout -> shop.events 'OrderPlaced'
+    }
+    shop.events -> shop.notify 'order event'
+    shop.notify -> customer 'confirmation email'
+  }
+
+  dynamic view browse {
+    title 'Browsing the catalogue'
+    description 'Searching for products on the mobile app'
+
+    customer -> shop.mobile 'searches'
+    shop.mobile -> shop.gateway 'GET /products'
+    shop.gateway -> shop.catalog.api 'product query'
+    parallel {
+      shop.catalog.api -> shop.catalog.catalogDb.products 'read products'
+      shop.catalog.api -> shop.catalog.pricing 'compute prices'
+    }
+    shop.gateway <- shop.catalog.api 'results'
+    shop.mobile <- shop.gateway 'product list'
+  }
+
+  dynamic view fulfilment {
+    title 'Fulfilment'
+    description 'From a placed order to a parcel at the door'
+
+    shop.events -> warehouse.wms 'ship order'
+    warehouse.scanners -> warehouse.wms 'items picked'
+    warehouse.wms -> shop.events 'OrderShipped'
+    shop.events -> shop.notify 'shipping event'
+    shop.notify -> customer 'tracking link'
+  }
+}

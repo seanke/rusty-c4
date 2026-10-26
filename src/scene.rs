@@ -73,6 +73,9 @@ pub enum Nav {
     Load(Source),
     /// Fly the camera to an element, close enough that it opens.
     Frame(Id),
+    /// Fly to an element picked in the code and make it glow: containers open, and a block
+    /// with nothing inside is shown among its neighbours.
+    Reveal(Id),
     /// Zoom out one level.
     Out,
     Detail(Option<Detail>),
@@ -85,6 +88,14 @@ pub enum Nav {
 
 #[derive(Resource, Default)]
 pub struct NavQueue(pub Vec<Nav>);
+
+/// Linking the 3D view and the source: a block clicked in 3D to show in the code, and a
+/// block picked in the code to glow for a moment in 3D.
+#[derive(Resource, Default)]
+pub struct Jump {
+    pub to_code: Option<Id>,
+    pub glow: Option<(Id, f32)>,
+}
 
 #[derive(Resource)]
 pub struct Fonts {
@@ -247,6 +258,7 @@ pub fn apply_nav(
     mut geometry: ResMut<Geometry>,
     mut watch: ResMut<Watch>,
     mut ws: ResMut<Workspace>,
+    mut jump: ResMut<Jump>,
 ) {
     for nav in std::mem::take(&mut queue.0) {
         match nav {
@@ -311,6 +323,21 @@ pub fn apply_nav(
                     cam.fit(Vec3::new(g.center.x, y, g.center.y), g.size * 1.05, false);
                 }
             }
+            Nav::Reveal(id) => {
+                let model = &diagram.model;
+                if !model.elements[id].children.is_empty() {
+                    queue.0.push(Nav::Frame(id));
+                } else {
+                    for a in model.path(Some(id)).iter().rev().skip(1).rev() {
+                        geometry.ensure_children(model, *a);
+                    }
+                    if let Some(g) = geometry.geos.get(&id).copied() {
+                        let y = expected_top(model, &geometry, id);
+                        cam.fit(Vec3::new(g.center.x, y, g.center.y), g.size * 2.6, false);
+                    }
+                }
+                jump.glow = Some((id, 2.5));
+            }
             Nav::Out => {
                 if diagram.detail.is_some() {
                     queue.0.push(Nav::Detail(None));
@@ -335,7 +362,13 @@ pub fn apply_nav(
                 diagram.detail = d;
                 diagram.version += 1;
             }
-            Nav::Fit => fit_root(&mut cam, &geometry),
+            Nav::Fit => {
+                // Back to the starting angle, too: undo any orbiting.
+                let turns = (cam.yaw.target / std::f32::consts::TAU).round();
+                cam.yaw.target = turns * std::f32::consts::TAU;
+                cam.pitch.target = crate::camera::DEFAULT_PITCH;
+                fit_root(&mut cam, &geometry);
+            }
             Nav::Reload | Nav::Reparse => {
                 if matches!(nav, Nav::Reload) {
                     let Some(path) = diagram.path.clone() else { continue };
@@ -412,6 +445,7 @@ pub fn pointer(
     ui: Query<&Interaction>,
     window: Single<Entity, With<PrimaryWindow>>,
     detail_view: Res<crate::detail::DetailView>,
+    mut jump: ResMut<Jump>,
 ) {
     cam.over_ui = ui.iter().any(|i| *i != Interaction::None);
     let cursor = cam.cursor.filter(|_| !cam.over_ui);
@@ -525,6 +559,10 @@ pub fn pointer(
                             }
                         } else if ptr.pressed_on == hit {
                             click(&mut queue, &diagram, hit);
+                            // Show a clicked block in the source, too.
+                            if let Some(Hit::Block(id)) = hit {
+                                jump.to_code = Some(id);
+                            }
                         }
                     }
                     MouseButton::Right => queue.0.push(Nav::Out),
@@ -570,26 +608,24 @@ pub fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     code: Res<crate::editor::Code>,
     diagram: Res<Diagram>,
-    mut menu: ResMut<crate::ui::Menu>,
     mut queue: ResMut<NavQueue>,
     mut playback: ResMut<crate::story::Playback>,
 ) {
     if !diagram.loaded || code.captures_keys() {
         return;
     }
+    // Esc backs out of whatever is open: a detail card, then a sequence.
     if keys.just_pressed(KeyCode::Escape) {
-        menu.open = !menu.open;
-        return;
-    }
-    if menu.open {
-        return;
-    }
-    // While a dynamic view plays: space plays and pauses, arrows step, backspace stops.
-    if let Some(stages) = playback.active.and_then(|i| diagram.model.views.get(i)).map(|v| v.stages().len()) {
-        if keys.just_pressed(KeyCode::Space) {
-            playback.toggle(stages);
+        if diagram.detail.is_some() {
+            queue.0.push(Nav::Detail(None));
+        } else {
+            playback.stop();
         }
-        if keys.just_pressed(KeyCode::ArrowRight) {
+        return;
+    }
+    // With a sequence open: arrows (or space) step through it, backspace closes it.
+    if let Some(stages) = playback.active.and_then(|i| diagram.model.views.get(i)).map(|v| v.stages().len()) {
+        if keys.any_just_pressed([KeyCode::ArrowRight, KeyCode::Space]) {
             playback.next(stages);
         }
         if keys.just_pressed(KeyCode::ArrowLeft) {

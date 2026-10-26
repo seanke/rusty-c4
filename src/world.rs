@@ -295,9 +295,18 @@ pub fn auto_open(
                 r = Some(r.map_or(pr, |a| a.union(pr)));
             }
         }
-        let Some(r) = r else { continue };
-        let on_screen = !r.intersect(screen).is_empty();
-        let wide = r.width() / cam.viewport.x.max(1.0);
+        // Close in, a big block's far corners go behind the camera and its projection
+        // falls apart; if the pivot is on it, judge its width from the camera distance.
+        let pivot = Vec2::new(cam.target.target.x, cam.target.target.z);
+        let around = g.rect().contains(pivot).then(|| {
+            let seen = 2.0 * cam.dist() * (crate::camera::FOV / 2.0).tan() * cam.viewport.x / cam.viewport.y.max(1.0);
+            g.size.x / seen.max(1e-6)
+        });
+        let (on_screen, wide) = match (r, around) {
+            (_, Some(w)) => (true, w.max(r.map_or(0.0, |r| r.width() / cam.viewport.x.max(1.0)))),
+            (Some(r), None) => (!r.intersect(screen).is_empty(), r.width() / cam.viewport.x.max(1.0)),
+            (None, None) => continue,
+        };
         let threshold = if view.opened.contains(&id) { CLOSE_AT } else { OPEN_AT };
         if on_screen && wide > threshold {
             open.insert(id);
@@ -465,6 +474,7 @@ pub fn animate(
     mut blocks: Query<(Entity, &mut Block, &mut Transform)>,
     mut mats: ResMut<Assets<BlockMaterial>>,
     theme: Res<Theme>,
+    mut jump: ResMut<crate::scene::Jump>,
 ) {
     let dt = time.delta_secs().min(0.05);
     let model = &diagram.model;
@@ -509,6 +519,14 @@ pub fn animate(
         Some(Detail::Element(id)) => Some(id),
         _ => None,
     };
+    // A block picked in the source glows for a moment.
+    if let Some((_, t)) = &mut jump.glow {
+        *t -= dt;
+    }
+    if jump.glow.is_some_and(|(_, t)| t <= 0.0) {
+        jump.glow = None;
+    }
+    let glowing = jump.glow.map(|(id, t)| (id, (t * 4.0).sin().abs().max(0.35)));
     for (e, b, mut tf) in &mut blocks {
         let Some(g) = geometry.geos.get(&b.id).copied() else { continue };
         let h = b.height.value.max(0.0);
@@ -537,8 +555,8 @@ pub fn animate(
                 lin(base.mix(&Color::srgb(0.08, 0.09, 0.15), 0.55)).truncate(),
                 lin(base.mix(&Color::srgb(0.98, 0.97, 0.93), 0.82)),
             ),
-            // The colour itself, a touch brighter, as the block's material.
-            Style::Blocky => (Vec3::ZERO, lin(base.mix(&Color::WHITE, 0.12))),
+            // A material picked from the colour (and depth), in the shader.
+            Style::Blocky => (Vec3::new(blocky_material(&model, b.id), 0.0, 0.0), lin(base)),
             // White linework (with a hint of the colour) on blueprint blue.
             Style::Blueprint => (
                 lin(Color::srgb(0.95, 0.97, 1.0).mix(&base, 0.18)).truncate(),
@@ -552,7 +570,11 @@ pub fn animate(
                 dims: Vec4::new(g.size.x * 0.5, g.size.y * 0.5, corner_radius(theme.style, g.scale), h),
                 p: Vec4::new(
                     b.hover.value.clamp(0.0, 1.0),
-                    if selected == Some(b.id) { 1.0 } else { 0.0 },
+                    match glowing {
+                        Some((id, g)) if id == b.id => g,
+                        _ if selected == Some(b.id) => 1.0,
+                        _ => 0.0,
+                    },
                     shape,
                     b.open.value.clamp(0.0, 1.0),
                 ),
@@ -560,6 +582,39 @@ pub fn animate(
             };
         }
     }
+}
+
+/// The material a block is made of in the blocky style (ids as in `block.wgsl`): grass
+/// islands for the usual blue, planks for amber, cobblestone for greys, bricks for red, and
+/// so on. Blue gets sturdier the deeper it sits: grass, then stone bricks, then quartz.
+fn blocky_material(model: &Model, id: Id) -> f32 {
+    let el = &model.elements[id];
+    let mut depth = 0;
+    let mut cur = el.parent;
+    while let Some(p) = cur {
+        depth += 1;
+        cur = model.elements[p].parent;
+    }
+    let hsl = Hsla::from(Color::srgb(el.color[0], el.color[1], el.color[2]));
+    let (h, s, l) = (hsl.hue, hsl.saturation, hsl.lightness);
+    let id = if s < 0.2 {
+        match l {
+            l if l < 0.18 => 10,
+            l if l < 0.6 => if depth % 2 == 0 { 2 } else { 5 },
+            _ => 9,
+        }
+    } else {
+        match h {
+            h if !(15.0..335.0).contains(&h) => 6,
+            h if h < 48.0 => 1,
+            h if h < 70.0 => 4,
+            h if h < 170.0 => 0,
+            h if h < 212.0 => 7,
+            h if h < 236.0 => [0, 5, 9][depth.min(2)],
+            _ => 8,
+        }
+    };
+    id as f32
 }
 
 /// The nearest block under the ray (origin, direction), with its distance.

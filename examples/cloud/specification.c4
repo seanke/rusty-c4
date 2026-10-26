@@ -1,0 +1,51 @@
+// Element kinds and how they look, shared by every file in the project.
+
+specification {
+  element actor {
+    style {
+      shape person
+      color amber
+    }
+  }
+  element system
+  element container
+  element component {
+    style {
+      color secondary
+    }
+  }
+  element database {
+    style {
+      shape storage
+      color slate
+    }
+  }
+  element queue {
+    style {
+      shape queue
+      color indigo
+    }
+  }
+  element webapp {
+    style {
+      shape browser
+      color sky
+    }
+  }
+  element mobileapp {
+    style {
+      shape mobile
+      color sky
+    }
+  }
+  element table {
+    style {
+      color muted
+    }
+  }
+  element external {
+    style {
+      color muted
+    }
+  }
+}

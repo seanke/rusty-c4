@@ -1,0 +1,13 @@
+// Behind the scenes: the warehouse and the staff's back office.
+
+model {
+  warehouse = system 'Warehouse' 'Picks, packs and ships orders' {
+    wms = container 'WMS' 'Warehouse management' 'SAP'
+    scanners = mobileapp 'Scanner App' 'Handheld picking' 'Android'
+    scanners -> wms 'confirms picks'
+  }
+
+  backoffice = system 'Back Office' 'Internal tools for staff' {
+    admin = webapp 'Admin Console' 'Refunds, customers and catalogue editing' 'React'
+  }
+}
