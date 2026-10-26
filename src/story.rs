@@ -11,7 +11,8 @@ use bevy::prelude::*;
 use crate::camera::Cam;
 use crate::model::{Id, Step};
 use crate::pipes::{visible_rep, Pipe};
-use crate::scene::{Diagram, Fonts, ACCENT, MUTED, TEXT};
+use crate::palette::{Role, Ui, UiEdge, UiFill, UiInk, UiTint};
+use crate::scene::{Diagram, Fonts};
 use crate::world::{Block, Geometry, Heights, View};
 
 /// Seconds for a pulse to travel its pipe, and to rest before it goes again.
@@ -191,11 +192,11 @@ pub fn drive(
 }
 
 /// The pulse's look in each style: a glowing ball, a dot of ink, a block of redstone, a
-/// yellow marker dot.
+/// yellow marker dot, a bright blue dot, a yellow taxi.
 #[derive(Resource)]
 pub struct PacketAssets {
-    mesh: [Handle<Mesh>; 4],
-    material: [Handle<StandardMaterial>; 4],
+    mesh: [Handle<Mesh>; 6],
+    material: [Handle<StandardMaterial>; 6],
 }
 
 pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
@@ -207,7 +208,7 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
         ..default()
     };
     commands.insert_resource(PacketAssets {
-        mesh: [ball.clone(), ball.clone(), cube, ball],
+        mesh: [ball.clone(), ball.clone(), cube.clone(), ball.clone(), ball, cube],
         material: [
             mats.add(StandardMaterial {
                 base_color: Color::BLACK,
@@ -217,6 +218,8 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
             mats.add(flat(Color::srgb(0.8, 0.16, 0.1))),
             mats.add(flat(Color::srgb(1.0, 0.2, 0.1))),
             mats.add(flat(Color::srgb(1.0, 0.85, 0.3))),
+            mats.add(flat(Color::srgb(0.31, 0.76, 1.0))),
+            mats.add(flat(Color::srgb(1.0, 0.78, 0.1))),
         ],
     });
 }
@@ -295,8 +298,6 @@ pub fn draw(
 
 // --- UI ------------------------------------------------------------------------------------
 
-const PANEL_BG: Color = Color::srgb(0.045, 0.052, 0.07);
-const EDGE: Color = Color::srgba(1.0, 1.0, 1.0, 0.09);
 
 /// The step list, shown while a sequence is open.
 #[derive(Component)]
@@ -339,7 +340,8 @@ fn icon_button(icons: &crate::icons::Icons, icon: crate::icons::Icon, action: St
         BackgroundColor(Color::NONE),
         action,
         children![(
-            ImageNode::new(icons.get(icon)).with_color(Color::srgba(0.86, 0.9, 0.97, 0.85)),
+            ImageNode::new(icons.get(icon)),
+            UiTint(Role::Icon, 0.95),
             Node {
                 width: px(14),
                 height: px(14),
@@ -365,8 +367,10 @@ pub fn spawn_ui(mut commands: Commands, fonts: Res<Fonts>, icons: Res<crate::ico
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BackgroundColor(PANEL_BG),
-            BorderColor::all(EDGE),
+            BackgroundColor(Color::NONE),
+            BorderColor::default(),
+            UiFill(Role::Panel),
+            UiEdge(Role::PanelEdge),
             Interaction::default(),
             Visibility::Hidden,
             StepsPanel,
@@ -380,7 +384,7 @@ pub fn spawn_ui(mut commands: Commands, fonts: Res<Fonts>, icons: Res<crate::ico
                 border: UiRect::bottom(px(1)),
                 ..default()
             })
-            .insert(BorderColor::all(EDGE))
+            .insert((BorderColor::default(), UiEdge(Role::PanelEdge)))
             .with_children(|h| {
                 h.spawn((
                     Node {
@@ -389,7 +393,8 @@ pub fn spawn_ui(mut commands: Commands, fonts: Res<Fonts>, icons: Res<crate::ico
                     },
                     Text::new(""),
                     font(&fonts, 13.0, FontWeight::SEMIBOLD),
-                    TextColor(TEXT),
+                    TextColor::default(),
+                    UiInk(Role::Text, 1.0),
                     StepsTitle,
                 ));
                 h.spawn(icon_button(&icons, Icon::ChevronLeft, StepButton::Prev));
@@ -437,6 +442,7 @@ pub fn ui(
     list: Single<Entity, With<StepsList>>,
     mut buttons: Query<(&Interaction, &StepButton, &mut BackgroundColor)>,
     mouse: Res<ButtonInput<MouseButton>>,
+    ui_theme: Res<Ui>,
     mut built: Local<Option<(u64, u64, Option<usize>)>>,
 ) {
     let model = &diagram.model;
@@ -476,7 +482,8 @@ pub fn ui(
                             },
                             Text::new(numbers[i].clone()),
                             font(&fonts, 12.5, FontWeight::SEMIBOLD),
-                            TextColor(ACCENT),
+                            TextColor::default(),
+                            UiInk(Role::Accent, 1.0),
                         ),
                         (
                             Node {
@@ -488,12 +495,14 @@ pub fn ui(
                                 (
                                     Text::new(if s.title.is_empty() { what.clone() } else { s.title.clone() }),
                                     font(&fonts, 13.0, FontWeight::MEDIUM),
-                                    TextColor(TEXT),
+                                    TextColor::default(),
+                                    UiInk(Role::Text, 1.0),
                                 ),
                                 (
                                     Text::new(if s.title.is_empty() { String::new() } else { what }),
                                     font(&fonts, 11.5, FontWeight::NORMAL),
-                                    TextColor(MUTED),
+                                    TextColor::default(),
+                                    UiInk(Role::Muted, 1.0),
                                 ),
                             ],
                         ),
@@ -517,9 +526,9 @@ pub fn ui(
     for (i, b, mut bg) in &mut buttons {
         let current = matches!(b, StepButton::Go(s) if *s == pb.stage);
         bg.0 = match i {
-            Interaction::None if current => Color::srgba(0.35, 0.6, 1.0, 0.25),
+            Interaction::None if current => ui_theme.p.row_current,
             Interaction::None => Color::NONE,
-            _ => Color::srgba(1.0, 1.0, 1.0, 0.08),
+            _ => ui_theme.p.hover,
         };
         if *i == Interaction::Pressed && mouse.just_pressed(MouseButton::Left) {
             match b {

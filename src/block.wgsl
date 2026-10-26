@@ -1,6 +1,8 @@
 // An extruded element block, in one of four styles (q.w): 0 Tron (near-black body, neon
 // edges), 1 Sketch (paper with wobbly ink outlines and hatched sides), 2 Blocky (voxel
-// sandbox materials picked by colour), 3 Blueprint (white linework drawn like walls on a floor plan). The mesh puts local top-face coordinates (x, up-the-screen) in `uv` and
+// sandbox materials picked by colour), 3 Blueprint (white linework drawn like walls on a floor plan),
+// 4 Dark (flat editor-grey panels with a coloured accent bar), 5 City (buildings with
+// windows, rooftops and plazas). The mesh puts local top-face coordinates (x, up-the-screen) in `uv` and
 // (height fraction, face: 0 top / 1 side) in `uv_b`.
 
 #import bevy_pbr::forward_io::VertexOutput
@@ -642,8 +644,149 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             col = col * select(0.92, 0.84, abs(n.x) > abs(n.z));
         }
         col = mix(col, ink, a_ink);
-        col = mix(col, vec3<f32>(0.009, 0.06, 0.24), 0.55 * dim);
+        // Dimmed blocks fade back into the paper.
+        col = mix(col, vec3<f32>(0.04, 0.16, 0.48), 0.55 * dim);
         return vec4<f32>(col, 1.0);
+    }
+
+    // --- City: buildings with windows, rooftops and plazas ---------------------------------
+    if style == 5 {
+        // sRGB throughout, converted at the end. `neon` is the facade colour; `body.x` says
+        // what this is: 1 a building, 2 a tree's crown, 3 a trunk, 4 a building in the
+        // skyline round the diagram.
+        let kind = i32(b.body.x + 0.5);
+        let u = 2.0 * scale;
+        let hot = max(hover, sel);
+        var col = vec3<f32>(0.0);
+        if kind == 2 || kind == 3 {
+            let leafy = kind == 2;
+            let g = hash2(floor(wp.xz / u) + floor(wp.y / u) * 7.1);
+            col = select(vec3<f32>(0.42, 0.3, 0.2), vec3<f32>(0.3, 0.55, 0.22), leafy) * (0.85 + 0.25 * g);
+            col = col * select(select(0.78, 0.66, abs(n.x) > abs(n.z)), 1.05, face < 0.5);
+            return vec4<f32>(pow(col, vec3<f32>(2.2)), 1.0);
+        }
+        // Facade: the colour, softened toward stone, so the city isn't garish.
+        let facade = mix(b.neon.rgb, vec3<f32>(0.78, 0.76, 0.72), 0.45);
+        if face < 0.5 {
+            if opened > 0.5 {
+                // A plaza: pale paving in a grid, a kerb round the edge, and the odd planter.
+                let tile = b.q.y * 0.5;
+                let g = abs(fract(local / tile - 0.5) - 0.5) * tile;
+                let joint = max(clamp(0.5 - (g.x - 0.04 * tile) / gaa.x, 0.0, 1.0),
+                                clamp(0.5 - (g.y - 0.04 * tile) / gaa.y, 0.0, 1.0));
+                let cell = floor(local / tile);
+                col = vec3<f32>(0.8, 0.79, 0.76) * (0.95 + 0.06 * hash2(cell));
+                col = mix(col, vec3<f32>(0.66, 0.65, 0.62), joint);
+                let kerb = step(-lw * 4.0, d);
+                col = mix(col, vec3<f32>(0.6, 0.6, 0.58), kerb);
+                // A grassy border just inside the kerb.
+                let lawn = step(-lw * 14.0, d) * (1.0 - kerb);
+                let gg = hash2(floor(local / (lw * 1.5)));
+                col = mix(col, vec3<f32>(0.4, 0.6, 0.28) * (0.88 + 0.2 * gg), lawn);
+            } else {
+                // A rooftop: gravel inside a parapet, a lift housing and a couple of vents.
+                let gravel = hash2(floor(local / (u * 0.6)));
+                col = vec3<f32>(0.66, 0.65, 0.63) * (0.9 + 0.14 * gravel);
+                col = mix(col, facade, 0.18);
+                let parapet = step(-u * 2.2, d);
+                col = mix(col, facade * 0.92, parapet);
+                col = mix(col, facade * 0.7, step(-u * 2.6, d) * (1.0 - parapet));
+                let seed = f32(shape) + b.dims.x * 0.37 + b.dims.y * 0.91;
+                for (var i = 0; i < 3; i++) {
+                    let r = vec2<f32>(hash2(vec2<f32>(seed, f32(i))), hash2(vec2<f32>(f32(i), seed + 3.0)));
+                    // Kept to the corners, away from the label in the middle.
+                    let c = (r - 0.5) * 2.0 * (half - u * 9.0);
+                    let at = vec2<f32>(select(-1.0, 1.0, c.x > 0.0), select(-1.0, 1.0, c.y > 0.0)) * (half - u * (6.0 + 4.0 * r));
+                    let sz = vec2<f32>(u * (2.0 + 2.0 * r.x), u * (2.0 + 1.5 * r.y));
+                    let shadow = sd_box(local - at + vec2<f32>(u * 0.8, -u * 0.8), sz, u * 0.2);
+                    col = mix(col, col * 0.7, step(shadow, 0.0));
+                    let unit = sd_box(local - at, sz, u * 0.2);
+                    col = mix(col, vec3<f32>(0.82, 0.83, 0.85) * select(1.0, 0.86, i == 1), step(unit, 0.0));
+                    col = mix(col, vec3<f32>(0.5), line(unit, lw * 0.5, aa));
+                }
+            }
+            // A blue outline when hovered or selected.
+            col = mix(col, vec3<f32>(0.1, 0.5, 1.0), line(d + lw * 0.8, lw * 1.6, aa) * hot);
+        } else {
+            // Storeys of windows; a ground floor of shopfront glass under an awning stripe.
+            let side_x = select(wp.x, wp.z, abs(n.x) > abs(n.z));
+            let y = v * h;
+            let storey = u * 5.0;
+            let bay = u * 4.0;
+            let fy = floor(y / storey);
+            let fx = floor(side_x / bay);
+            let ly = fract(y / storey);
+            let lx = fract(side_x / bay);
+            let lit = select(0.85, 0.65, abs(n.x) > abs(n.z));
+            col = facade;
+            let ground = y < storey * 1.2;
+            if ground {
+                let glass = ly < 0.8 && lx > 0.08 && lx < 0.92;
+                col = select(facade * 0.8, vec3<f32>(0.22, 0.3, 0.36), glass);
+                if y > storey * 1.0 {
+                    col = select(vec3<f32>(0.9, 0.9, 0.88), b.neon.rgb, fract(side_x / (u * 1.5)) < 0.5);
+                }
+            } else if h - y > u * 1.2 {
+                let win = lx > 0.22 && lx < 0.78 && ly > 0.25 && ly < 0.8;
+                if win {
+                    let r = hash2(vec2<f32>(fx, fy) + floor(side_x / 997.0));
+                    var glass = mix(vec3<f32>(0.32, 0.45, 0.58), vec3<f32>(0.62, 0.76, 0.88), ly);
+                    if r > 0.82 {
+                        glass = vec3<f32>(1.0, 0.86, 0.55);
+                    }
+                    col = glass;
+                } else if ly < 0.1 {
+                    col = facade * 0.88;
+                }
+            }
+            col = col * lit;
+            // Ambient shadow at the foot of the wall.
+            col = col * mix(0.7, 1.0, clamp(y / (u * 4.0), 0.0, 1.0));
+            col = mix(col, vec3<f32>(0.1, 0.5, 1.0), line(h - y - lw * 0.5, lw, yaa) * hot);
+        }
+        if kind == 4 {
+            col = mix(col, vec3<f32>(0.62, 0.78, 0.93), 0.35);
+        }
+        col = mix(col, vec3<f32>(0.6, 0.7, 0.6), 0.55 * dim);
+        return vec4<f32>(pow(col, vec3<f32>(2.2)), 1.0);
+    }
+
+    // --- Dark: a code editor's flat panels --------------------------------------------------
+    if style == 4 {
+        // Colours here are sRGB, converted at the end. `neon` is the element's colour.
+        let accent = b.neon.rgb;
+        let focus = vec3<f32>(0.0, 0.48, 0.8);
+        let hot = max(hover, sel);
+        var col = b.body.rgb;
+        if face < 0.5 {
+            let inside = clamp(0.5 - d / aa, 0.0, 1.0);
+            // Hover and selection tint the panel like a list row.
+            col = mix(col, vec3<f32>(0.165, 0.176, 0.18), hover * (1.0 - opened));
+            col = mix(col, vec3<f32>(0.016, 0.224, 0.369), 0.45 * sel * (1.0 - opened));
+            // An opened block is a sunken editor area with a faint dotted grid.
+            if opened > 0.01 {
+                let s = b.q.y;
+                let g = abs(fract(local / s - 0.5) - 0.5) * s;
+                let dot = clamp(0.5 - (length(g) - 0.06 * s) / max(gaa.x, gaa.y), 0.0, 1.0);
+                let well = mix(vec3<f32>(0.118), vec3<f32>(0.2), dot * 0.6);
+                col = mix(col, well, opened * step(d, -lw * 3.0));
+            }
+            // A coloured bar down the left edge, as for a modified line or a tab.
+            let bar = step(local.x, -half.x + 3.0 * scale) * inside;
+            col = mix(col, accent, bar * 0.9);
+            // A hairline border, blue when focused.
+            let edge = line(d + lw * 0.45, lw * (0.6 + 0.5 * hot), aa);
+            col = mix(col, mix(vec3<f32>(0.27), focus, hot), edge);
+            let m = marker(local, half, k, shape);
+            col = mix(col, vec3<f32>(0.52), line(m, lw * 0.6, aa) * (1.0 - opened));
+        } else {
+            // Sides: a shade darker, with the border carried down the top edge.
+            col = col * select(0.72, 0.6, abs(n.x) > abs(n.z));
+            let y = v * h;
+            col = mix(col, mix(vec3<f32>(0.27), focus, hot), line(h - y - lw * 0.4, lw * 0.6, yaa));
+        }
+        col = mix(col, vec3<f32>(0.118), 0.6 * dim);
+        return vec4<f32>(pow(col, vec3<f32>(2.2)), 1.0);
     }
 
     // --- Tron: dark body, neon edges -------------------------------------------------------

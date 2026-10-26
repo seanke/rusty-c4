@@ -1,6 +1,8 @@
-//! The blocky style's scenery: beaches and shallows round the islands (drawn by the floor
-//! shader from their footprints), little islets out in the sea with trees or a cactus, and
-//! blocky clouds drifting past. None of it can be clicked; it's there to make the world feel lived in.
+//! Scenery round the diagram, for the styles that are little worlds. Blocky: beaches and
+//! shallows round the islands (drawn by the floor shader from their footprints), islets out
+//! in the sea with trees or a cactus, and blocky clouds. City: pavements round the buildings
+//! (the floor again), a skyline of other buildings further out, trees in the park, and
+//! clouds. None of it can be clicked; it's there to make the world feel lived in.
 
 use bevy::prelude::*;
 
@@ -25,7 +27,7 @@ pub struct Cloud {
 /// What the scenery was last built for, and the islets it made.
 #[derive(Default)]
 pub struct Built {
-    key: Option<(bool, u64, [i32; 4])>,
+    key: Option<(Option<Style>, u64, [i32; 4])>,
     islets: Vec<Rect>,
 }
 
@@ -74,21 +76,27 @@ pub fn update(
     mut clouds: Query<(&Cloud, &mut Transform)>,
     mut built: Local<Built>,
 ) {
-    let on = theme.style == Style::Blocky && diagram.loaded;
+    let world = Some(theme.style).filter(|s| matches!(s, Style::Blocky | Style::City) && diagram.loaded);
+    let on = world.is_some();
     let b = geometry.root_bounds;
-    let key = (on, diagram.resets, [b.min.x as i32, b.min.y as i32, b.max.x as i32, b.max.y as i32]);
+    let key = (world, diagram.resets, [b.min.x as i32, b.min.y as i32, b.max.x as i32, b.max.y as i32]);
     if built.key != Some(key) {
         built.key = Some(key);
         for e in &scenery {
             commands.entity(e).despawn();
         }
         built.islets.clear();
-        if on && b.width() > 0.0 {
-            spawn(&mut commands, &mut meshes, &mut blocks, &mut standard, b, &mut built.islets);
+        if b.width() > 0.0 {
+            match world {
+                Some(Style::Blocky) => spawn(&mut commands, &mut meshes, &mut blocks, &mut standard, b, &mut built.islets),
+                Some(Style::City) => spawn_city(&mut commands, &mut meshes, &mut blocks, &mut standard, b),
+                _ => {}
+            }
         }
     }
 
-    // The islands the sea needs to know about: the top-level blocks, and the islets.
+    // The islands the sea (or the park) needs to know about: the top-level blocks, and the
+    // islets.
     let mut islands: Vec<Vec4> = Vec::new();
     if on {
         let model = &diagram.model;
@@ -189,7 +197,12 @@ fn spawn(
         }
     }
 
-    // Clouds: flat white slabs high up, kept off the diagram itself.
+    clouds(commands, meshes, standard, bounds, &mut rng, (230.0, 330.0));
+}
+
+/// Flat white slabs high up, kept off the diagram itself, drifting to and fro.
+fn clouds(commands: &mut Commands, meshes: &mut Assets<Mesh>, standard: &mut Assets<StandardMaterial>, bounds: Rect, rng: &mut Rng, altitude: (f32, f32)) {
+    let reach = bounds.size().max_element();
     let cloud = standard.add(StandardMaterial {
         base_color: Color::srgba(1.0, 1.0, 1.0, 0.82),
         alpha_mode: AlphaMode::Blend,
@@ -213,7 +226,7 @@ fn spawn(
             continue;
         }
         placed.push(rect);
-        let y = rng.range(230.0, 330.0);
+        let y = rng.range(altitude.0, altitude.1);
         let home = Vec3::new(at.x, y, at.y);
         commands
             .spawn((
@@ -260,4 +273,90 @@ fn tree(commands: &mut Commands, meshes: &mut Assets<Mesh>, blocks: &mut Assets<
             Scenery,
         ));
     }
+}
+
+/// A city building's material (see the city section of `block.wgsl`): `kind` 1 a building,
+/// 2 a tree's crown, 3 a trunk, 4 a building in the skyline.
+fn city(kind: f32, colour: Vec3, size: Vec2, height: f32) -> BlockUniform {
+    BlockUniform {
+        neon: colour.extend(0.0),
+        body: Vec4::new(kind, 0.0, 0.0, 0.0),
+        dims: Vec4::new(size.x * 0.5, size.y * 0.5, 1.0, height),
+        p: Vec4::ZERO,
+        q: Vec4::new(2.2, 20.0, 0.0, Style::City.index()),
+    }
+}
+
+fn spawn_city(commands: &mut Commands, meshes: &mut Assets<Mesh>, blocks: &mut Assets<BlockMaterial>, standard: &mut Assets<StandardMaterial>, bounds: Rect) {
+    let mut rng = Rng(0x51ed_2701_93a5_c4e1 ^ (bounds.width() as u64).wrapping_mul(2654435761) ^ bounds.height() as u64);
+    let reach = bounds.size().max_element();
+    let half = bounds.half_size();
+    let toward = |rng: &mut Rng, lo: f32, hi: f32| {
+        let ang = rng.range(0.0, std::f32::consts::TAU);
+        let dir = Vec2::new(ang.cos(), ang.sin());
+        let to_edge = (half.x / dir.x.abs().max(1e-3)).min(half.y / dir.y.abs().max(1e-3));
+        bounds.center() + dir * (to_edge + rng.range(lo, hi))
+    };
+    let facades = [
+        Vec3::new(0.82, 0.74, 0.6),
+        Vec3::new(0.7, 0.42, 0.34),
+        Vec3::new(0.62, 0.66, 0.7),
+        Vec3::new(0.86, 0.84, 0.8),
+        Vec3::new(0.5, 0.6, 0.72),
+        Vec3::new(0.74, 0.6, 0.46),
+    ];
+
+    // A skyline: blocks of other buildings in a ring well clear of the diagram, taller the
+    // further out they are.
+    let clear = bounds.inflate(300.0);
+    let mut placed: Vec<Rect> = Vec::new();
+    let mut tries = 0;
+    while placed.len() < 46 && tries < 900 {
+        tries += 1;
+        let out = rng.range(320.0, 420.0 + reach * 0.7);
+        let at = toward(&mut rng, out, out + 1.0);
+        let size = Vec2::new(rng.range(60.0, 150.0), rng.range(60.0, 150.0));
+        let rect = Rect::from_center_size(at, size);
+        if !rect.intersect(clear).is_empty() || placed.iter().any(|r| !r.inflate(28.0).intersect(rect).is_empty()) {
+            continue;
+        }
+        placed.push(rect);
+        let height = rng.range(80.0, 160.0) + (out - 320.0) * rng.range(0.15, 0.45);
+        let colour = facades[(rng.next() * facades.len() as f32) as usize % facades.len()];
+        commands.spawn((
+            Mesh3d(meshes.add(prism(size, 1.0))),
+            MeshMaterial3d(blocks.add(BlockMaterial { u: city(4.0, colour, size, height) })),
+            Transform::from_xyz(at.x, 0.0, at.y).with_scale(Vec3::new(1.0, height, 1.0)),
+            Scenery,
+        ));
+    }
+
+    // Trees dotted about the park between the diagram and the skyline.
+    let near = bounds.inflate(50.0);
+    let mut trees: Vec<Vec2> = Vec::new();
+    let mut tries = 0;
+    while trees.len() < 60 && tries < 900 {
+        tries += 1;
+        let at = toward(&mut rng, 60.0, 260.0);
+        if near.contains(at) || placed.iter().any(|r| r.inflate(14.0).contains(at)) || trees.iter().any(|t| t.distance(at) < 22.0) {
+            continue;
+        }
+        trees.push(at);
+        let k = rng.range(0.8, 1.3);
+        let trunk = Vec2::splat(4.0 * k);
+        let crown = Vec2::splat(rng.range(16.0, 22.0) * k);
+        let th = 12.0 * k;
+        let ch = rng.range(14.0, 20.0) * k;
+        for (kind, size, y, h) in [(3.0, trunk, 0.0, th), (2.0, crown, th, ch), (2.0, crown * 0.6, th + ch, ch * 0.5)] {
+            commands.spawn((
+                Mesh3d(meshes.add(prism(size, 0.5))),
+                MeshMaterial3d(blocks.add(BlockMaterial { u: city(kind, Vec3::ZERO, size, h) })),
+                Transform::from_xyz(at.x, y, at.y).with_scale(Vec3::new(1.0, h, 1.0)),
+                Scenery,
+            ));
+        }
+    }
+
+    // High enough to clear the tallest towers.
+    clouds(commands, meshes, standard, bounds, &mut rng, (560.0, 680.0));
 }

@@ -12,14 +12,16 @@ move once laid: a pipe from outside still runs into the container's side as befo
 comes up through a small port on the platform beside the component it belongs to, labelled
 with where it comes from or goes to. Ports and tags are placed so that nothing overlaps.
 
-Four looks to choose from: **Tron** (neon edges on dark glass, with bloom), **Sketch**
+Six looks to choose from: **Tron** (neon edges on dark glass, with bloom), **Sketch**
 (pen and ink on paper, with hatched sides and handwriting), **Blocky** (a voxel sandbox:
 islands in a rippling sea, each made of a material picked from its colour — grass and dirt,
 oak planks, cobblestone, stone bricks, prismarine, purpur, with mossy, cracked and carved
 blocks mixed in — whose cliffs show dirt, rock, ore and deepslate; sandy beaches and lily
 pads round them, wooded islets and clouds out past them, and redstone dust between them,
 with torches for ports) and **Blueprint** (white linework on cyanotype blue, blocks drawn like
-walls on a floor plan, technical capitals).
+walls on a floor plan, technical capitals), **Dark** (flat panels like a code editor's dark
+theme, a coloured accent bar on each) and **City** (towers with lit windows, rooftop plazas,
+roads with little cars driving each way a relationship goes, and a skyline round a park).
 
 Dynamic views are sequences you step through: pick one from the **Sequences** dropdown and
 a numbered list of its steps appears (parallel steps lettered, 3a and 3b). Each step you move
@@ -33,7 +35,8 @@ Databases open up too: zoom into one and its tables stand on it, linked by their
 Everything is on the toolbar along the top (hover an icon for what it does and its shortcut):
 open, save and reload on the left with the sequence picker and step arrows; zoom, fit, style
 and the source panel on the right. On macOS the menus live in the system menu bar; elsewhere
-there is a File / View / Sequences bar in the window.
+there is a File / View / Sequences bar in the window. Menus, panels and the source editor
+follow the system's light or dark appearance; View ▸ Appearance can pin either one.
 
 ## Running
 
@@ -43,7 +46,8 @@ cargo run -- path/to/project    # every .c4 / .likec4 file under a directory
 cargo run -- path/to/model.c4   # a single file
 cargo run -- --example          # the built-in example (also in examples/cloud)
 cargo run -- --example mermaid  # the built-in Mermaid example
-cargo run -- --style blueprint  # pick a look: tron (default), sketch, blocky or blueprint
+cargo run -- --style city       # pick a look: tron (default), sketch, blocky, blueprint, dark or city
+cargo run -- --ui light         # light or dark interface (default: follow the system)
 ```
 
 Files are watched and reloaded on save.

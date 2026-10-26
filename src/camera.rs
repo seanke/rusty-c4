@@ -14,7 +14,7 @@ use bevy::{
 use crate::render::Spring;
 
 pub const FOV: f32 = 0.42;
-pub const DEFAULT_PITCH: f32 = 1.02;
+pub const DEFAULT_PITCH: f32 = 1.3;
 
 #[derive(Resource)]
 pub struct Cam {

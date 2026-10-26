@@ -1,6 +1,7 @@
 // The floor everything stands on, in one of four styles (p.w): 0 a dark plane with a neon
 // grid fading into the distance; 1 paper with faint graph lines and grain; 2 rippling pixel
-// water fading into sky haze; 3 blueprint blue with a white drafting grid.
+// water fading into sky haze; 3 blueprint blue with a white drafting grid; 4 an editor's
+// charcoal with a barely-there grid; 5 a park of striped grass with pavements.
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::{view, globals}
@@ -62,12 +63,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(col, 1.0);
     }
     if style == 3 {
-        // Cyanotype: slightly mottled blue, a fine grid and a stronger one every few squares.
+        // Cyanotype: light, slightly mottled blue with a faint fine grid and a softer one
+        // every few squares, kept quiet so the drawings stand out.
         let mottle = 1.0 + 0.06 * (hash2(floor(pos / 160.0)) - 0.5) + 0.03 * (hash2(floor(pos / 9.0)) - 0.5);
         let minor_l = grid(pos, aa, s, s * 0.03);
         let major_l = grid(pos, aa, s * major, s * 0.08);
         var col = fl.base.rgb * mottle;
-        col = mix(col, fl.color.rgb, (minor_l * 0.16 + major_l * 0.34) * far);
+        col = mix(col, fl.color.rgb, (minor_l * 0.07 + major_l * 0.17) * far);
         return vec4<f32>(col, 1.0);
     }
     if style == 2 {
@@ -122,6 +124,37 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let pixel_fade = smoothstep(1.0, 3.0, s / max(aa.x, aa.y));
         col = mix(fl.base.rgb * 0.95, col, pixel_fade);
         col = mix(fl.color.rgb, col, far);
+        return vec4<f32>(col, 1.0);
+    }
+
+    if style == 5 {
+        // Parkland: mown grass in broad stripes, with pavements round every building
+        // (from the island footprints), fading into sky haze far off.
+        var shore = 1e9;
+        for (var i = 0; i < i32(fl.n.x); i++) {
+            let r = fl.islands[i];
+            let q = abs(pos - r.xy) - r.zw;
+            shore = min(shore, length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0));
+        }
+        let stripe = fract((pos.x + pos.y * 0.0) / (s * 12.0)) < 0.5;
+        let blade = hash2(floor(pos / s));
+        var col = fl.base.rgb * select(0.92, 1.04, stripe) * (0.93 + 0.1 * blade);
+        let walk = s * 4.0;
+        if shore < walk {
+            let slab = abs(fract(pos / (s * 2.5) - 0.5) - 0.5) * s * 2.5;
+            let joint = min(slab.x, slab.y) < s * 0.12;
+            col = pow(select(vec3<f32>(0.8, 0.79, 0.76), vec3<f32>(0.68, 0.67, 0.64), joint), vec3<f32>(2.2));
+            if shore > walk - s * 0.5 {
+                col = pow(vec3<f32>(0.62, 0.62, 0.6), vec3<f32>(2.2));
+            }
+        }
+        col = mix(fl.color.rgb, col, far);
+        return vec4<f32>(col, 1.0);
+    }
+    if style == 4 {
+        let minor_l = grid(pos, aa, s, s * 0.02);
+        let major_l = grid(pos, aa, s * major, s * 0.03);
+        let col = mix(fl.base.rgb, fl.color.rgb, (minor_l * 0.35 + major_l * 0.7) * far);
         return vec4<f32>(col, 1.0);
     }
 

@@ -4,6 +4,7 @@
 use bevy::prelude::*;
 
 use crate::camera::Cam;
+use crate::palette::{Appearance, Ui};
 use crate::editor::Code;
 use crate::scene::{Diagram, Nav, NavQueue, Source};
 use crate::story::Playback;
@@ -24,6 +25,8 @@ pub enum AppAction {
     Fit,
     Style(Style),
     NextStyle,
+    /// Light or dark interface, or follow the system.
+    Appearance(Appearance),
     /// Show a dynamic view (by index), or none.
     Sequence(Option<usize>),
     PrevStep,
@@ -46,6 +49,7 @@ impl AppAction {
             AppAction::Fit => "Fit View".into(),
             AppAction::Style(s) => s.name().into(),
             AppAction::NextStyle => "Next Style".into(),
+            AppAction::Appearance(a) => a.name().into(),
             AppAction::Sequence(None) => "No Sequence".into(),
             AppAction::Sequence(Some(i)) => diagram.model.views.get(i).map_or_else(|| "Sequence".into(), |v| v.title.clone()),
             AppAction::PrevStep => "Previous Step".into(),
@@ -109,7 +113,7 @@ fn item(action: AppAction) -> Entry {
     }
 }
 
-pub fn entries(kind: MenuKind, diagram: &Diagram, theme: &Theme, playback: &Playback, native: bool) -> Vec<Entry> {
+pub fn entries(kind: MenuKind, diagram: &Diagram, theme: &Theme, ui: &Ui, playback: &Playback, native: bool) -> Vec<Entry> {
     let loaded = diagram.loaded;
     let styles = || {
         Style::ALL.into_iter().map(|s| Entry::Item {
@@ -157,6 +161,13 @@ pub fn entries(kind: MenuKind, diagram: &Diagram, theme: &Theme, playback: &Play
             ];
             out.extend(styles());
             out.push(item(AppAction::NextStyle));
+            out.push(Entry::Separator);
+            out.push(Entry::Heading("Appearance"));
+            out.extend(Appearance::ALL.into_iter().map(|a| Entry::Item {
+                action: AppAction::Appearance(a),
+                checked: Some(ui.choice == a),
+                enabled: true,
+            }));
             out
         }
         MenuKind::Style => styles().collect(),
@@ -206,6 +217,7 @@ pub fn run(
     mut theme: ResMut<Theme>,
     mut playback: ResMut<Playback>,
     mut cam: ResMut<Cam>,
+    mut ui: ResMut<Ui>,
     diagram: Res<Diagram>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -231,6 +243,7 @@ pub fn run(
                 let next = theme.style.next();
                 theme.set(next);
             }
+            AppAction::Appearance(a) => ui.set(a),
             AppAction::Sequence(Some(i)) => playback.start(i),
             AppAction::Sequence(None) => playback.stop(),
             AppAction::PrevStep => playback.prev(),

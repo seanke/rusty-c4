@@ -71,7 +71,11 @@ pub fn decal_with(
     pill: bool,
 ) -> (Entity, Handle<DecalMaterial>) {
     let (_, bg, edge) = style.tag();
-    let corner = if style == Style::Blocky { 0.08 } else { 0.5 };
+    let corner = match style {
+        Style::Blocky => 0.08,
+        Style::Dark | Style::City => 0.2,
+        _ => 0.5,
+    };
     let material = mats.add(DecalMaterial {
         u: DecalUniform {
             tint: Vec4::new(1.0, 1.0, 1.0, 0.0),

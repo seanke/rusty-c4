@@ -46,8 +46,8 @@ pub struct Painted {
 pub struct Painter {
     fonts: FontSystem,
     cache: SwashCache,
-    /// A family for each style (clean sans, handwriting, chunky pixels).
-    families: [Option<String>; 4],
+    /// A family for each style (clean sans, handwriting, chunky pixels, technical, sans, sans).
+    families: [Option<String>; 6],
     pub style: Style,
 }
 
@@ -56,7 +56,13 @@ impl Painter {
         // Families with real bold faces: the system's variable SF font renders its heavier
         // weights slanted through this rasteriser.
         let mut db = fontdb::Database::new();
-        let choices: [&[&[&str]]; 4] = [
+        let sans: &[&[&str]] = &[
+            &["/System/Library/Fonts/HelveticaNeue.ttc"],
+            &["/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
+            &["C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\segoeuib.ttf"],
+            &["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"],
+        ];
+        let choices: [&[&[&str]]; 6] = [
             &[
                 &["/System/Library/Fonts/HelveticaNeue.ttc"],
                 &["/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
@@ -81,8 +87,10 @@ impl Painter {
                 &["C:\\Windows\\Fonts\\bahnschrift.ttf"],
                 &["/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf"],
             ],
+            sans,
+            sans,
         ];
-        let mut families: [Option<String>; 4] = [None, None, None, None];
+        let mut families: [Option<String>; 6] = Default::default();
         for (i, options) in choices.iter().enumerate() {
             for files in options.iter() {
                 let found: Vec<Vec<u8>> = files.iter().filter_map(|p| std::fs::read(p).ok()).collect();

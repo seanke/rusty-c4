@@ -7,6 +7,7 @@
 mod actions;
 mod camera;
 mod chrome;
+mod city;
 mod detail;
 mod editor;
 mod icons;
@@ -15,6 +16,7 @@ mod layout;
 mod mermaid;
 mod model;
 mod paint;
+mod palette;
 mod parser;
 mod pipes;
 mod render;
@@ -44,6 +46,7 @@ use scene::{Diagram, Nav, NavQueue, Pointer, Source, BG};
 fn main() {
     let mut source = None;
     let mut style = theme::Style::Tron;
+    let mut appearance = palette::Appearance::System;
     let mut args = std::env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -58,15 +61,25 @@ fn main() {
             "--style" => match args.next().as_deref().and_then(theme::Style::parse) {
                 Some(s) => style = s,
                 None => {
-                    eprintln!("rustyc4: --style takes tron, sketch, blocky or blueprint");
+                    eprintln!("rustyc4: --style takes tron, sketch, blocky, blueprint, dark or city");
+                    std::process::exit(2);
+                }
+            },
+            "--ui" => match args.next().as_deref() {
+                Some("light") => appearance = palette::Appearance::Light,
+                Some("dark") => appearance = palette::Appearance::Dark,
+                Some("system") => appearance = palette::Appearance::System,
+                _ => {
+                    eprintln!("rustyc4: --ui takes system, light or dark");
                     std::process::exit(2);
                 }
             },
             "-h" | "--help" => {
-                println!("usage: rustyc4 [path | --example] [--style tron|sketch|blocky|blueprint]");
+                println!("usage: rustyc4 [path | --example] [--style tron|sketch|blocky|blueprint|dark|city] [--ui system|light|dark]");
                 println!("  path       a .c4 / .likec4 file, or a directory of them");
                 println!("  --example  open the built-in example model (`--example mermaid` for the Mermaid one)");
                 println!("  --style    how it looks (T switches while running)");
+                println!("  --ui       light or dark menus and panels, or follow the system (the default)");
                 return;
             }
             p => source = Some(Source::Path(PathBuf::from(p))),
@@ -123,6 +136,7 @@ fn main() {
     .init_resource::<story::Playback>()
     .init_resource::<workspace::Workspace>()
     .init_resource::<scene::Jump>()
+    .insert_resource(palette::Ui::new(appearance))
     .insert_resource(chrome::Chrome::new())
     .init_resource::<actions::Actions>()
     .init_resource::<chrome::Popup>()
@@ -132,7 +146,7 @@ fn main() {
     .add_systems(
         Update,
         (
-            (script::run, script::hover, actions::shortcuts, chrome::interact, ui::welcome_buttons).chain(),
+            (script::run, script::hover, actions::shortcuts, palette::follow_system, chrome::interact, ui::welcome_buttons).chain(),
             (
                 // The editor takes the keys first when it has focus.
                 editor::input,
@@ -160,6 +174,7 @@ fn main() {
                 // The camera moves before anything is projected through it this frame.
                 camera::apply,
                 pipes::update,
+                city::traffic,
                 story::draw,
                 labels::update,
                 ui::update,
@@ -168,6 +183,7 @@ fn main() {
                 ui::file_drop,
                 ui::dialogs,
                 ui::overlays,
+                palette::restyle,
             )
                 .chain(),
         )

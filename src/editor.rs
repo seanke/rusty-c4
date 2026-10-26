@@ -26,7 +26,8 @@ use cosmic_text::{
 
 use crate::parser::{is_mermaid, Diagnostic};
 use crate::model::{Id, Model};
-use crate::scene::{Diagram, Fonts, Jump, Nav, NavQueue, Watch, TEXT};
+use crate::palette::{Role, Ui, UiEdge, UiFill, UiInk};
+use crate::scene::{Diagram, Fonts, Jump, Nav, NavQueue, Watch};
 use crate::workspace::Workspace;
 
 /// Starting panel width, and the file list's width, in logical pixels.
@@ -37,13 +38,6 @@ const LINE: f32 = 19.0;
 const GUTTER: f32 = 44.0;
 const PAD: f32 = 8.0;
 
-const BG: [u8; 4] = [14, 17, 23, 255];
-const LINE_BG: [u8; 4] = [255, 255, 255, 10];
-const SELECTION: [u8; 4] = [70, 130, 210, 90];
-const CARET: [u8; 4] = [120, 200, 255, 255];
-const GUTTER_INK: Ink = Ink::rgba(110, 120, 140, 255);
-const ERROR: [u8; 4] = [240, 90, 90, 255];
-const WARNING: [u8; 4] = [235, 185, 70, 255];
 
 #[derive(Clone, Copy, PartialEq)]
 enum Lang {
@@ -75,17 +69,23 @@ enum Token {
     Brace,
 }
 
-fn ink(t: Token) -> Ink {
-    match t {
-        Token::Plain => Ink::rgb(214, 222, 235),
-        Token::Keyword => Ink::rgb(199, 146, 234),
-        Token::Str => Ink::rgb(236, 196, 141),
-        Token::Comment => Ink::rgb(105, 120, 120),
-        Token::Arrow => Ink::rgb(127, 219, 202),
-        Token::Tag => Ink::rgb(173, 219, 103),
-        Token::Number => Ink::rgb(247, 140, 108),
-        Token::Brace => Ink::rgb(140, 150, 170),
-    }
+fn ink(pal: &crate::palette::Code, t: Token) -> Ink {
+    let i = match t {
+        Token::Plain => 0,
+        Token::Keyword => 1,
+        Token::Str => 2,
+        Token::Comment => 3,
+        Token::Arrow => 4,
+        Token::Tag => 5,
+        Token::Number => 6,
+        Token::Brace => 7,
+    };
+    let [r, g, b] = pal.tokens[i];
+    Ink::rgb(r, g, b)
+}
+
+fn rgba(c: [u8; 4]) -> Ink {
+    Ink::rgba(c[0], c[1], c[2], c[3])
 }
 
 /// Split a line into coloured byte ranges.
@@ -167,6 +167,8 @@ pub struct Code {
     /// The code font's family name (leaked once, so text attributes can borrow it freely).
     family: Option<&'static str>,
     editor: Editor<'static>,
+    /// The colours it paints with, from the interface's light or dark palette.
+    pal: crate::palette::Code,
     gutter: Buffer,
     popup: Buffer,
     pub open: bool,
@@ -227,7 +229,7 @@ impl Code {
             Some(f) => Family::Name(f),
             None => Family::Monospace,
         };
-        Attrs::new().family(family).color(ink(Token::Plain))
+        Attrs::new().family(family).color(ink(&self.pal, Token::Plain))
     }
 
     fn text(&self) -> String {
@@ -252,11 +254,12 @@ impl Code {
     fn recolour(&mut self) {
         let base = self.attrs().clone();
         let lang = self.lang;
+        let pal = self.pal;
         self.editor.with_buffer_mut(|b| {
             for line in b.lines.iter_mut() {
                 let mut list = AttrsList::new(&base);
                 for (range, tok) in highlight(line.text(), lang) {
-                    list.add_span(range, &base.clone().color(ink(tok)));
+                    list.add_span(range, &base.clone().color(ink(&pal, tok)));
                 }
                 line.set_attrs_list(list);
             }
@@ -436,7 +439,7 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        &BG,
+        &crate::palette::DARK.code.bg,
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     ));
@@ -445,6 +448,7 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
         cache: SwashCache::new(),
         family,
         editor,
+        pal: crate::palette::DARK.code,
         gutter,
         popup,
         open: false,
@@ -473,8 +477,6 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
         pending_reveal: false,
     });
 
-    let panel_bg = Color::srgb(0.045, 0.055, 0.075);
-    let hairline = Color::srgba(1.0, 1.0, 1.0, 0.08);
     // Docked on the right, below the toolbar; the 3D view gets the rest of the window.
     commands
         .spawn((
@@ -490,8 +492,10 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
                 display: Display::None,
                 ..default()
             },
-            BackgroundColor(panel_bg),
-            BorderColor::all(hairline),
+            BackgroundColor::default(),
+            BorderColor::default(),
+            UiFill(Role::Panel),
+            UiEdge(Role::Hairline),
             Interaction::default(),
             Panel,
         ))
@@ -503,13 +507,15 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
                     flex_shrink: 0.0,
                     ..default()
                 },
-                BorderColor::all(hairline),
+                BorderColor::default(),
+                UiEdge(Role::Hairline),
             ))
             .with_children(|h| {
                 h.spawn((
                     Text::new("SOURCE"),
                     ui_font(&fonts, 11.5, FontWeight::SEMIBOLD),
-                    TextColor(Color::srgba(0.72, 0.9, 1.0, 0.75)),
+                    TextColor::default(),
+                    UiInk(Role::Muted, 1.0),
                     Header,
                 ));
             });
@@ -531,8 +537,10 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
                         overflow: Overflow::scroll_y(),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.18)),
-                    BorderColor::all(hairline),
+                    BackgroundColor::default(),
+                    BorderColor::default(),
+                    UiFill(Role::Well),
+                    UiEdge(Role::Hairline),
                     ScrollPosition::default(),
                     RelativeCursorPosition::default(),
                     Tree,
@@ -566,7 +574,8 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
                                 flex_shrink: 0.0,
                                 ..default()
                             },
-                            BorderColor::all(hairline),
+                            BorderColor::default(),
+                            UiEdge(Role::Hairline),
                         ))
                         .with_children(|row| {
                             row.spawn((
@@ -576,7 +585,8 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
                                 },
                                 Text::new(""),
                                 ui_font(&fonts, 12.0, FontWeight::MEDIUM),
-                                TextColor(Color::srgba(0.8, 0.86, 0.95, 0.75)),
+                                TextColor::default(),
+                                UiInk(Role::Text, 0.75),
                                 Status,
                             ));
                             row.spawn((
@@ -587,9 +597,10 @@ pub fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>, fonts: R
                                     display: Display::None,
                                     ..default()
                                 },
-                                BackgroundColor(Color::srgba(0.25, 0.5, 0.9, 0.35)),
+                                BackgroundColor::default(),
+                                UiFill(Role::Fix),
                                 FixButton,
-                                children![(Text::new("Fix  ⌘."), ui_font(&fonts, 12.0, FontWeight::SEMIBOLD), TextColor(TEXT))],
+                                children![(Text::new("Fix  ⌘."), ui_font(&fonts, 12.0, FontWeight::SEMIBOLD), TextColor::default(), UiInk(Role::Text, 1.0))],
                             ));
                         });
                     });
@@ -1152,7 +1163,7 @@ pub fn draw(
     mut code: ResMut<Code>,
     mut ws: ResMut<Workspace>,
     diagram: Res<Diagram>,
-    fonts: Res<Fonts>,
+    (fonts, ui): (Res<Fonts>, Res<Ui>),
     mut images: ResMut<Assets<Image>>,
     window: Single<&Window>,
     mut panel: Single<&mut Node, With<Panel>>,
@@ -1168,6 +1179,11 @@ pub fn draw(
     mut built: Local<Option<(u64, usize, Vec<bool>)>>,
 ) {
     let code = &mut *code;
+    // The interface went light or dark: repaint in its colours.
+    if code.pal.bg != ui.p.code.bg {
+        code.pal = ui.p.code;
+        code.recolour();
+    }
     let display = if code.open && diagram.loaded { Display::Flex } else { Display::None };
     if panel.display != display {
         panel.display = display;
@@ -1218,29 +1234,34 @@ pub fn draw(
                         },
                         Text::new(format!("{}/", parts[d - 1])),
                         ui_font(&fonts, 12.5, FontWeight::SEMIBOLD),
-                        TextColor(Color::srgba(0.72, 0.8, 0.92, 0.6)),
+                        TextColor::default(),
+                        UiInk(Role::TreeDir, 1.0),
                         ChildOf(tree_e),
                     ));
                 }
             }
             let on = i == active;
             let name = format!("{}{}", parts[parts.len() - 1], if dirty[i] { "  •" } else { "" });
-            commands.spawn((
+            let file_row = commands.spawn((
                 Button,
                 Node {
                     padding: UiRect::new(px(8.0 + 14.0 * (parts.len() - 1) as f32), px(8), px(4), px(4)),
                     border_radius: BorderRadius::all(px(6)),
                     ..default()
                 },
-                BackgroundColor(if on { Color::srgba(0.3, 0.55, 0.95, 0.28) } else { Color::NONE }),
+                BackgroundColor(Color::NONE),
                 FileButton(i),
                 ChildOf(tree_e),
                 children![(
                     Text::new(name),
                     ui_font(&fonts, 12.5, if on { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }),
-                    TextColor(if on { TEXT } else { Color::srgba(0.85, 0.9, 1.0, 0.75) }),
+                    TextColor::default(),
+                    UiInk(if on { Role::Text } else { Role::TreeFile }, 1.0),
                 )],
-            ));
+            )).id();
+            if on {
+                commands.entity(file_row).insert(UiFill(Role::TreeActive));
+            }
         }
     }
 
@@ -1314,7 +1335,7 @@ pub fn draw(
                     depth_or_array_layers: 1,
                 },
                 TextureDimension::D2,
-                &BG,
+                &code.pal.bg,
                 TextureFormat::Rgba8UnormSrgb,
                 RenderAssetUsages::default(),
             );
@@ -1346,7 +1367,7 @@ fn render(code: &mut Code, diags: &[&Diagnostic]) -> Vec<u8> {
     let sf = code.sf;
     let mut px = vec![0u8; (w * h * 4) as usize];
     for p in px.chunks_exact_mut(4) {
-        p.copy_from_slice(&BG);
+        p.copy_from_slice(&code.pal.bg);
     }
     let blend = |px: &mut [u8], x: i32, y: i32, rw: i32, rh: i32, c: [u8; 4], x_min: i32| {
         let a = c[3] as f32 / 255.0;
@@ -1371,7 +1392,7 @@ fn render(code: &mut Code, diags: &[&Diagnostic]) -> Vec<u8> {
     // Current line.
     if code.focused {
         if let Some((_, cy)) = code.editor.cursor_position() {
-            blend(&mut px, 0, cy + pad, w, line_h as i32, LINE_BG, 0);
+            blend(&mut px, 0, cy + pad, w, line_h as i32, code.pal.line, 0);
         }
     }
 
@@ -1395,25 +1416,26 @@ fn render(code: &mut Code, diags: &[&Diagnostic]) -> Vec<u8> {
         code.gutter.set_text(fonts, &numbers.join("\n"), &attrs, Shaping::Advanced, Some(Align::Right));
         code.gutter.shape_until_scroll(fonts, false);
         let gy = pad + top as i32;
-        code.gutter.draw(fonts, &mut code.cache, GUTTER_INK, |x, y, gw, gh, c| {
+        code.gutter.draw(fonts, &mut code.cache, rgba(code.pal.gutter), |x, y, gw, gh, c| {
             blend(&mut px, x, y + gy, gw as i32, gh as i32, [c.r(), c.g(), c.b(), c.a()], 0);
         });
     }
 
     // Selection, text and caret.
     let caret = if code.focused && code.blink < 0.55 {
-        Ink::rgba(CARET[0], CARET[1], CARET[2], 255)
+        rgba(code.pal.caret)
     } else {
         Ink::rgba(0, 0, 0, 0)
     };
     let fonts = &mut code.fonts;
+    let pal = code.pal;
     code.editor.draw(
         fonts,
         &mut code.cache,
-        ink(Token::Plain),
+        ink(&pal, Token::Plain),
         caret,
-        Ink::rgba(SELECTION[0], SELECTION[1], SELECTION[2], SELECTION[3]),
-        ink(Token::Plain),
+        rgba(pal.selection),
+        ink(&pal, Token::Plain),
         |x, y, gw, gh, c| {
             blend(&mut px, x + x0, y + pad, gw as i32, gh as i32, [c.r(), c.g(), c.b(), c.a()], x0 - 2);
         },
@@ -1433,7 +1455,7 @@ fn render(code: &mut Code, diags: &[&Diagnostic]) -> Vec<u8> {
                 let xs: Vec<(f32, f32)> = run.glyphs.iter().filter(|g| g.start < e && g.end > s).map(|g| (g.x, g.x + g.w)).collect();
                 if let (Some(a), Some(z)) = (xs.iter().map(|p| p.0).reduce(f32::min), xs.iter().map(|p| p.1).reduce(f32::max)) {
                     let y = run.line_top + line_h - 3.0 * sf;
-                    out.push((a as i32, z as i32, y as i32, if d.error { ERROR } else { WARNING }));
+                    out.push((a as i32, z as i32, y as i32, if d.error { pal.error } else { pal.warning }));
                 }
             }
         }
@@ -1465,12 +1487,12 @@ fn render(code: &mut Code, diags: &[&Diagnostic]) -> Vec<u8> {
         if by + bh > h {
             by = cy + pad - bh - (2.0 * sf) as i32;
         }
-        blend(&mut px, bx - 1, by - 1, bw + 2, bh + 2, [90, 120, 170, 255], 0);
-        blend(&mut px, bx, by, bw, bh, [24, 29, 40, 255], 0);
+        blend(&mut px, bx - 1, by - 1, bw + 2, bh + 2, pal.popup_edge, 0);
+        blend(&mut px, bx, by, bw, bh, pal.popup_bg, 0);
         let sel_y = by + (4.0 * sf) as i32 + (c.selected as f32 * line_h) as i32;
-        blend(&mut px, bx, sel_y, bw, line_h as i32, [60, 100, 170, 200], 0);
+        blend(&mut px, bx, sel_y, bw, line_h as i32, pal.popup_sel, 0);
         let (tx, ty) = (bx + (10.0 * sf) as i32, by + (4.0 * sf) as i32);
-        code.popup.draw(fonts, &mut code.cache, ink(Token::Plain), |x, y, gw, gh, col| {
+        code.popup.draw(fonts, &mut code.cache, ink(&pal, Token::Plain), |x, y, gw, gh, col| {
             blend(&mut px, x + tx, y + ty, gw as i32, gh as i32, [col.r(), col.g(), col.b(), col.a()], 0);
         });
     }

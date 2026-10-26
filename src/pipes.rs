@@ -26,8 +26,11 @@ use crate::world::{Geometry, Heights, View};
 
 /// Pipe radius, in layout units of the level it runs on.
 const PIPE_R: f32 = 3.6;
-/// How thick the blocky style's dust trails are, as a fraction of their width.
-const DUST_THIN: f32 = 0.18;
+/// How thick the blocky style's dust trails (and the city's roads) are, as a fraction of
+/// their width.
+pub const DUST_THIN: f32 = 0.18;
+/// How much wider than a pipe the city's roads are.
+pub const ROAD_WIDE: f32 = 1.7;
 /// Routing grid cell, in layout units.
 const CELL: f32 = 15.0;
 /// How far pipes keep from block walls, in cells.
@@ -99,8 +102,10 @@ pub struct Pipe {
     delay: f32,
     pub dying: bool,
     built: f32,
-    /// The centre line as last built, for picking and the story's pulses.
+    /// The centre line as last built, for picking, the story's pulses and the city's cars.
     pub samples: Vec<Vec3>,
+    /// The pipe's radius where it starts.
+    pub radius: f32,
 }
 
 impl Pipe {
@@ -796,8 +801,11 @@ fn centre_line(route: &[Waypoint], bridges: &[Waypoint], geometry: &Geometry, he
 }
 
 /// A tube along `line`, with `uv.x` measured in radii along it.
-/// For the blocky style, a flat strip lying on its surface instead, like a trail of dust.
-fn tube(lines: &[Vec<(Vec3, f32)>], square: bool) -> Mesh {
+/// For the blocky and city styles, a flat strip lying on its surface instead (a trail of
+/// dust, a road), `wide` times as wide as the tube would be.
+fn tube(lines: &[Vec<(Vec3, f32)>], flat: Option<f32>) -> Mesh {
+    let square = flat.is_some();
+    let wide = flat.unwrap_or(1.0);
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     let sides = if square { 4 } else { 10 };
     let turn = if square { std::f32::consts::FRAC_PI_4 } else { 0.0 };
@@ -827,7 +835,7 @@ fn tube(lines: &[Vec<(Vec3, f32)>], square: bool) -> Mesh {
                 let o = normal * ang.cos() + binormal * ang.sin();
                 let at = if square {
                     // Squashed toward the surface (the binormal points down on level runs).
-                    let flat = normal * ang.cos() + binormal * ang.sin() * DUST_THIN;
+                    let flat = normal * ang.cos() * wide + binormal * ang.sin() * DUST_THIN;
                     p + binormal * (1.0 - DUST_THIN) * r + flat * r * std::f32::consts::SQRT_2
                 } else {
                     p + o * r
@@ -874,8 +882,8 @@ pub struct PortAssets {
     ring: Handle<Mesh>,
     cube: Handle<Mesh>,
     cap: Handle<Mesh>,
-    body_mat: [Handle<StandardMaterial>; 4],
-    ring_mat: [Handle<StandardMaterial>; 4],
+    body_mat: [Handle<StandardMaterial>; 6],
+    ring_mat: [Handle<StandardMaterial>; 6],
 }
 
 pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
@@ -898,7 +906,9 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
             }),
             mats.add(flat(Color::srgb(0.97, 0.95, 0.9))),
             mats.add(flat(Color::srgb(0.47, 0.34, 0.19))),
-            mats.add(flat(Style::Blueprint.background())),
+            mats.add(flat(Style::BLUEPRINT_BLOCK)),
+            mats.add(flat(Color::srgb(0.235, 0.235, 0.235))),
+            mats.add(flat(Color::srgb(0.3, 0.31, 0.33))),
         ],
         ring_mat: [
             mats.add(StandardMaterial {
@@ -909,6 +919,8 @@ pub fn setup(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats:
             mats.add(flat(Color::srgb(0.1, 0.11, 0.18))),
             mats.add(flat(Color::srgb(1.0, 0.22, 0.1))),
             mats.add(flat(Color::srgb(0.95, 0.97, 1.0))),
+            mats.add(flat(Color::srgb(0.22, 0.58, 1.0))),
+            mats.add(flat(Color::srgb(0.25, 0.9, 0.4))),
         ],
     });
 }
@@ -1109,7 +1121,7 @@ pub fn update(
             let material = mats.add(PipeMaterial {
                 u: PipeUniform::default(),
             });
-            let mesh = meshes.add(tube(&[], false));
+            let mesh = meshes.add(tube(&[], None));
             let port = placed.port.map(|at| {
                 let (body_mesh, cap_mesh) = if theme.style == Style::Blocky {
                     (port_assets.cube.clone(), port_assets.cap.clone())
@@ -1170,6 +1182,7 @@ pub fn update(
                     dying: false,
                     built: -1.0,
                     samples: Vec::new(),
+                    radius: 0.0,
                 },
             ));
         }
@@ -1199,9 +1212,15 @@ pub fn update(
         if heights.moving || (grow - p.built).abs() > 1e-4 {
             let line = centre_line(&p.piece, &p.bridges, &geometry, &heights, grow);
             if let Some(m) = meshes.get_mut(&p.mesh) {
-                *m = tube(&[line.clone()], theme.style == Style::Blocky);
+                let flat = match theme.style {
+                    Style::Blocky => Some(1.0),
+                    Style::City => Some(ROAD_WIDE),
+                    _ => None,
+                };
+                *m = tube(&[line.clone()], flat);
             }
             p.samples = line.iter().map(|(q, _)| *q).collect();
+            p.radius = line.first().map_or(0.0, |(_, r)| *r);
             p.built = grow;
         }
         let color = neon(model.elements[p.from].color).lerp(Vec3::new(0.05, 0.85, 1.0), 0.55);

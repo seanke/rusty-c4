@@ -4,10 +4,9 @@ use bevy::{ecs::system::NonSendMarker, prelude::*, window::FileDragAndDrop};
 
 use crate::actions::{Actions, AppAction};
 use crate::chrome::Chrome;
-use crate::scene::{Diagram, Fonts, Nav, NavQueue, Source, ACCENT, MUTED, TEXT};
+use crate::palette::{Role, Ui, UiEdge, UiFill, UiInk, UiShadow};
+use crate::scene::{Diagram, Fonts, Nav, NavQueue, Source};
 use crate::workspace::Example;
-
-const HAIRLINE: Color = Color::srgba(1.0, 1.0, 1.0, 0.07);
 
 #[derive(Component)]
 pub struct WarnText;
@@ -42,17 +41,12 @@ impl PendingDialog {
 #[derive(Component, Clone, Copy, PartialEq)]
 pub struct Action(AppAction);
 
-const BUTTON: Color = Color::srgba(1.0, 1.0, 1.0, 0.06);
-const BUTTON_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.12);
-
-const BUTTON_PRIMARY: Color = Color::srgb(0.27, 0.42, 0.85);
-const BUTTON_PRIMARY_HOVER: Color = Color::srgb(0.33, 0.49, 0.93);
-
-/// A button's resting and hovered background.
-#[derive(Component)]
-pub struct Look {
-    base: Color,
-    hover: Color,
+/// What kind of welcome-screen button this is, for its colours.
+#[derive(Component, Clone, Copy, PartialEq)]
+pub enum Look {
+    Primary,
+    Plain,
+    Link,
 }
 
 #[derive(Resource)]
@@ -86,7 +80,8 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>, chrome: Res<Chrome>) {
         },
         Text::new(""),
         font(&fonts, 12.5, FontWeight::MEDIUM),
-        TextColor(Color::srgb(0.95, 0.72, 0.35)),
+        TextColor::default(),
+        UiInk(Role::Warn, 1.0),
         WarnText,
     ));
 
@@ -101,12 +96,14 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>, chrome: Res<Chrome>) {
                 c.spawn((
                     Text::new("rustyc4"),
                     font(&fonts, 40.0, FontWeight::BOLD),
-                    TextColor(TEXT),
+                    TextColor::default(),
+                    UiInk(Role::Text, 1.0),
                 ));
                 c.spawn((
                     Text::new("Open a LikeC4 project to explore it."),
                     font(&fonts, 15.0, FontWeight::NORMAL),
-                    TextColor(MUTED),
+                    TextColor::default(),
+                    UiInk(Role::Muted, 1.0),
                 ));
                 c.spawn(error_line(&fonts));
                 c.spawn(Node {
@@ -126,7 +123,8 @@ pub fn spawn(mut commands: Commands, fonts: Res<Fonts>, chrome: Res<Chrome>) {
                     },
                     Text::new("or drop a .c4 or .mmd file, or a folder, onto this window"),
                     font(&fonts, 12.5, FontWeight::NORMAL),
-                    TextColor(Color::srgba(0.85, 0.88, 0.95, 0.4)),
+                    TextColor::default(),
+                    UiInk(Role::Faint, 1.0),
                 ));
                 c.spawn(Node {
                     flex_direction: FlexDirection::Row,
@@ -185,10 +183,13 @@ fn card() -> impl Bundle {
             border_radius: BorderRadius::all(px(18)),
             ..default()
         },
-        BackgroundColor(Color::srgb(0.07, 0.08, 0.105)),
-        BorderColor::all(HAIRLINE),
+        BackgroundColor::default(),
+        BorderColor::default(),
+        UiFill(Role::Card),
+        UiEdge(Role::Hairline),
+        UiShadow(Role::Shadow),
         BoxShadow::new(
-            Color::srgba(0.0, 0.0, 0.0, 0.5),
+            Color::NONE,
             px(0),
             px(12),
             px(0),
@@ -205,7 +206,8 @@ fn error_line(fonts: &Fonts) -> impl Bundle {
         },
         Text::new(""),
         font(fonts, 13.0, FontWeight::MEDIUM),
-        TextColor(Color::srgb(0.95, 0.55, 0.45)),
+        TextColor::default(),
+        UiInk(Role::Error, 1.0),
         ErrorText,
     )
 }
@@ -220,23 +222,14 @@ fn button(fonts: &Fonts, label: &str, action: Action, primary: bool) -> impl Bun
             border_radius: BorderRadius::all(px(10)),
             ..default()
         },
-        BackgroundColor(if primary { BUTTON_PRIMARY } else { BUTTON }),
-        if primary {
-            Look {
-                base: BUTTON_PRIMARY,
-                hover: BUTTON_PRIMARY_HOVER,
-            }
-        } else {
-            Look {
-                base: BUTTON,
-                hover: BUTTON_HOVER,
-            }
-        },
+        BackgroundColor::default(),
+        if primary { Look::Primary } else { Look::Plain },
         action,
         children![(
             Text::new(label),
             font(fonts, 14.5, FontWeight::SEMIBOLD),
-            TextColor(TEXT),
+            TextColor(Color::WHITE),
+            UiInk(if primary { Role::OnPrimary } else { Role::Text }, 1.0),
         )],
     )
 }
@@ -251,29 +244,34 @@ fn link(fonts: &Fonts, label: &str, action: Action) -> impl Bundle {
             ..default()
         },
         BackgroundColor(Color::NONE),
-        Look {
-            base: Color::NONE,
-            hover: Color::srgba(1.0, 1.0, 1.0, 0.05),
-        },
+        Look::Link,
         action,
         children![(
             Text::new(label),
             font(fonts, 13.0, FontWeight::MEDIUM),
-            TextColor(ACCENT),
+            TextColor::default(),
+            UiInk(Role::Accent, 1.0),
         )],
     )
 }
 
 pub fn welcome_buttons(
-    mut buttons: Query<(&Interaction, &Action, &Look, &mut BackgroundColor), Changed<Interaction>>,
+    mut buttons: Query<(Ref<Interaction>, &Action, &Look, &mut BackgroundColor)>,
     mut actions: ResMut<Actions>,
+    ui: Res<Ui>,
 ) {
+    let p = &ui.p;
     for (interaction, action, look, mut bg) in &mut buttons {
-        bg.0 = match interaction {
-            Interaction::None => look.base,
-            _ => look.hover,
+        let hot = *interaction != Interaction::None;
+        let want = match look {
+            Look::Primary => if hot { p.primary_hover } else { p.primary },
+            Look::Plain => if hot { p.button_hover } else { p.button },
+            Look::Link => if hot { p.link_hover } else { Color::NONE },
         };
-        if *interaction == Interaction::Pressed {
+        if bg.0 != want {
+            bg.0 = want;
+        }
+        if interaction.is_changed() && *interaction == Interaction::Pressed {
             actions.0.push(action.0);
         }
     }

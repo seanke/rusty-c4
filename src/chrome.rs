@@ -7,18 +7,13 @@ use bevy::prelude::*;
 use crate::actions::{entries, Actions, AppAction, Entry, MenuKind};
 use crate::editor::Code;
 use crate::icons::{Icon, Icons};
-use crate::scene::{Diagram, Fonts, TEXT};
+use crate::palette::{Palette, Role, Ui, UiEdge, UiFill, UiInk, UiShadow, UiTint};
+use crate::scene::{Diagram, Fonts};
 use crate::story::Playback;
 use crate::theme::Theme;
 
 pub const MENUBAR_H: f32 = 28.0;
 pub const TOOLBAR_H: f32 = 40.0;
-const BAR_BG: Color = Color::srgb(0.055, 0.063, 0.082);
-const HAIRLINE: Color = Color::srgba(1.0, 1.0, 1.0, 0.08);
-const HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.08);
-const PRESSED: Color = Color::srgba(1.0, 1.0, 1.0, 0.14);
-const ACTIVE: Color = Color::srgba(0.35, 0.6, 1.0, 0.22);
-const ICON: Color = Color::srgba(0.86, 0.9, 0.97, 0.9);
 
 /// How the window is laid out around the 3D view.
 #[derive(Resource)]
@@ -59,6 +54,13 @@ pub struct SequenceName;
 #[derive(Component)]
 pub struct Tooltip;
 
+/// The two texts in the tooltip: what the button does, and its shortcut (dimmer).
+#[derive(Component, PartialEq)]
+pub enum TipPart {
+    Label,
+    Key,
+}
+
 #[derive(Component)]
 pub struct PopupItem(Option<AppAction>);
 
@@ -97,7 +99,7 @@ fn tool(icons: &Icons, icon: Icon, action: Option<AppAction>, menu: Option<MenuK
         BackgroundColor(Color::NONE),
         ToolButton { action, menu },
         children![(
-            ImageNode::new(icons.get(icon)).with_color(ICON),
+            ImageNode::new(icons.get(icon)),
             Node {
                 width: px(16),
                 height: px(16),
@@ -116,7 +118,8 @@ fn separator() -> impl Bundle {
             margin: UiRect::horizontal(px(6)),
             ..default()
         },
-        BackgroundColor(HAIRLINE),
+        BackgroundColor(Color::NONE),
+        UiFill(Role::Hairline),
     )
 }
 
@@ -135,7 +138,8 @@ pub fn spawn(mut commands: Commands, chrome: Res<Chrome>, icons: Res<Icons>, fon
                     padding: UiRect::horizontal(px(6)),
                     ..default()
                 },
-                BackgroundColor(Color::srgb(0.045, 0.052, 0.068)),
+                BackgroundColor(Color::NONE),
+                UiFill(Role::MenuBar),
                 Interaction::default(),
             ))
             .with_children(|bar| {
@@ -149,7 +153,7 @@ pub fn spawn(mut commands: Commands, chrome: Res<Chrome>, icons: Res<Icons>, fon
                         },
                         BackgroundColor(Color::NONE),
                         MenuTitle(kind),
-                        children![(Text::new(kind.title()), ui_font(&fonts, 13.0, FontWeight::NORMAL), TextColor(TEXT.with_alpha(0.85)))],
+                        children![(Text::new(kind.title()), ui_font(&fonts, 13.0, FontWeight::NORMAL), TextColor::default(), UiInk(Role::Text, 0.85))],
                     ));
                 }
             });
@@ -171,8 +175,10 @@ pub fn spawn(mut commands: Commands, chrome: Res<Chrome>, icons: Res<Icons>, fon
                 border: UiRect::bottom(px(1)),
                 ..default()
             },
-            BackgroundColor(BAR_BG),
-            BorderColor::all(HAIRLINE),
+            BackgroundColor(Color::NONE),
+            BorderColor::default(),
+            UiFill(Role::Bar),
+            UiEdge(Role::Hairline),
             Interaction::default(),
         ))
         .with_children(|bar| {
@@ -207,7 +213,8 @@ pub fn spawn(mut commands: Commands, chrome: Res<Chrome>, icons: Res<Icons>, fon
                 ))
                 .with_children(|b| {
                     b.spawn((
-                        ImageNode::new(icons.get(Icon::List)).with_color(ICON),
+                        ImageNode::new(icons.get(Icon::List)),
+                        UiTint(Role::Icon, 1.0),
                         Node {
                             width: px(16),
                             height: px(16),
@@ -217,11 +224,13 @@ pub fn spawn(mut commands: Commands, chrome: Res<Chrome>, icons: Res<Icons>, fon
                     b.spawn((
                         Text::new("Sequences"),
                         ui_font(&fonts, 12.5, FontWeight::MEDIUM),
-                        TextColor(TEXT.with_alpha(0.85)),
+                        TextColor::default(),
+                        UiInk(Role::Text, 0.85),
                         SequenceName,
                     ));
                     b.spawn((
-                        ImageNode::new(icons.get(Icon::ChevronDown)).with_color(ICON.with_alpha(0.6)),
+                        ImageNode::new(icons.get(Icon::ChevronDown)),
+                        UiTint(Role::Icon, 0.6),
                         Node {
                             width: px(12),
                             height: px(12),
@@ -248,23 +257,32 @@ pub fn spawn(mut commands: Commands, chrome: Res<Chrome>, icons: Res<Icons>, fon
             });
         });
 
+    // The tooltip: a padded box holding the label and, a little apart and dimmer, the
+    // shortcut.
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            padding: UiRect::axes(px(8), px(4)),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: px(12),
+            padding: UiRect::axes(px(9), px(5)),
             border: UiRect::all(px(1)),
             border_radius: BorderRadius::all(px(5)),
             ..default()
         },
-        BackgroundColor(Color::srgb(0.13, 0.14, 0.18)),
-        BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.16)),
-        BoxShadow::new(Color::srgba(0.0, 0.0, 0.0, 0.45), px(0), px(4), px(0), px(12)),
+        BackgroundColor(Color::NONE),
+        BorderColor::default(),
+        BoxShadow::new(Color::NONE, px(0), px(4), px(0), px(12)),
+        UiFill(Role::Tooltip),
+        UiEdge(Role::TooltipEdge),
+        UiShadow(Role::Shadow),
         GlobalZIndex(120),
         Visibility::Hidden,
-        Text::new(""),
-        ui_font(&fonts, 12.0, FontWeight::MEDIUM),
-        TextColor(TEXT.with_alpha(0.9)),
         Tooltip,
+        children![
+            (Text::new(""), ui_font(&fonts, 12.0, FontWeight::MEDIUM), TextColor::default(), UiInk(Role::Text, 0.92), TipPart::Label),
+            (Node::default(), Text::new(""), ui_font(&fonts, 12.0, FontWeight::MEDIUM), TextColor::default(), UiInk(Role::Muted, 1.0), TipPart::Key),
+        ],
     ));
 }
 
@@ -274,16 +292,14 @@ fn node_rect(node: &ComputedNode, tf: &UiGlobalTransform) -> Rect {
     Rect::from_center_size(tf.translation * k, node.size * k)
 }
 
-fn tip_text(tb: &ToolButton, diagram: &Diagram) -> String {
+/// A button's tooltip: what it does, and its shortcut if it has one.
+fn tip_text(tb: &ToolButton, diagram: &Diagram) -> (String, String) {
     match (tb.action, tb.menu) {
-        (Some(a), _) => match a.shortcut() {
-            Some(s) => format!("{}   {s}", a.label(diagram)),
-            None => a.label(diagram),
-        },
-        (None, Some(MenuKind::Style)) => "Style   T".into(),
-        (None, Some(MenuKind::Sequences)) => "Choose a sequence".into(),
-        (None, Some(k)) => k.title().into(),
-        _ => String::new(),
+        (Some(a), _) => (a.label(diagram), a.shortcut().unwrap_or_default().to_string()),
+        (None, Some(MenuKind::Style)) => ("Style".into(), "T".into()),
+        (None, Some(MenuKind::Sequences)) => ("Choose a sequence".into(), String::new()),
+        (None, Some(k)) => (k.title().into(), String::new()),
+        _ => (String::new(), String::new()),
     }
 }
 
@@ -291,7 +307,7 @@ fn tip_text(tb: &ToolButton, diagram: &Diagram) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn interact(
     mut commands: Commands,
-    (time, diagram, theme, playback, code, fonts): (Res<Time>, Res<Diagram>, Res<Theme>, Res<Playback>, Res<Code>, Res<Fonts>),
+    (time, diagram, theme, playback, code, fonts, ui): (Res<Time>, Res<Diagram>, Res<Theme>, Res<Playback>, Res<Code>, Res<Fonts>, Res<Ui>),
     window: Single<&Window>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut actions: ResMut<Actions>,
@@ -301,15 +317,16 @@ pub fn interact(
     mut titles: Query<(Entity, &Interaction, &MenuTitle, &mut BackgroundColor, &ComputedNode, &UiGlobalTransform), Without<ToolButton>>,
     mut items: Query<(&Interaction, &PopupItem, &mut BackgroundColor), (Without<ToolButton>, Without<MenuTitle>)>,
     mut icons: Query<&mut ImageNode, With<ToolIcon>>,
-    mut seq_name: Single<&mut Text, (With<SequenceName>, Without<Tooltip>)>,
-    tip: Single<(&mut Node, &mut Text, &mut Visibility, &ComputedNode), With<Tooltip>>,
+    mut seq_name: Single<&mut Text, (With<SequenceName>, Without<TipPart>)>,
+    tip: Single<(&mut Node, &mut Visibility, &ComputedNode), With<Tooltip>>,
+    mut tip_parts: Query<(&mut Text, &mut Node, &TipPart), (Without<SequenceName>, Without<Tooltip>)>,
 ) {
     // Dropdown items.
     let mut picked = false;
     for (i, item, mut bg) in &mut items {
         bg.0 = match (i, item.0.is_some()) {
             (Interaction::None, _) | (_, false) => Color::NONE,
-            _ => Color::srgba(0.35, 0.6, 1.0, 0.35),
+            _ => ui.p.item_hover,
         };
         if *i == Interaction::Pressed {
             if let Some(a) = item.0 {
@@ -335,7 +352,7 @@ pub fn interact(
             .into_iter()
             .find(|k| k.title().eq_ignore_ascii_case(&n))
     });
-    let mut hovered: Option<(Entity, String, Rect)> = None;
+    let mut hovered: Option<(Entity, (String, String), Rect)> = None;
     let mut any_pressed = false;
     for (e, i, tb, mut bg, children, node, tf) in &mut buttons {
         let active = match tb.action {
@@ -346,9 +363,9 @@ pub fn interact(
             open = Some((tb.menu.unwrap(), e, node_rect(node, tf), false));
         }
         bg.0 = match i {
-            Interaction::Pressed => PRESSED,
-            Interaction::Hovered => HOVER,
-            Interaction::None if active => ACTIVE,
+            Interaction::Pressed => ui.p.pressed,
+            Interaction::Hovered => ui.p.hover,
+            Interaction::None if active => ui.p.active,
             Interaction::None => Color::NONE,
         };
         let enabled = match tb.action {
@@ -359,7 +376,7 @@ pub fn interact(
         };
         for c in children.iter() {
             if let Ok(mut img) = icons.get_mut(c) {
-                img.color = if enabled { ICON } else { ICON.with_alpha(0.3) };
+                img.color = if enabled { ui.p.icon } else { ui.p.icon.with_alpha(0.3) };
             }
         }
         if *i == Interaction::Hovered {
@@ -378,7 +395,7 @@ pub fn interact(
         let active = popup.open.is_some_and(|(k, _, _)| k == t.0);
         bg.0 = match i {
             Interaction::None if !active => Color::NONE,
-            _ => HOVER,
+            _ => ui.p.hover,
         };
         if wanted == Some(t.0) {
             open = Some((t.0, e, node_rect(node, tf), true));
@@ -398,8 +415,8 @@ pub fn interact(
         let same = popup.open.is_some_and(|(k, _, _)| k == kind);
         close(&mut commands, &mut popup);
         if !same {
-            let list = entries(kind, &diagram, &theme, &playback, false);
-            let root = spawn_menu(&mut commands, &fonts, &diagram, &list, rect, window.width());
+            let list = entries(kind, &diagram, &theme, &ui, &playback, false);
+            let root = spawn_menu(&mut commands, &fonts, &ui.p, &diagram, &list, rect, window.width());
             popup.open = Some((kind, anchor, bar));
             popup.root = Some(root);
         }
@@ -421,21 +438,28 @@ pub fn interact(
     }
 
     // Tooltip, after a short hover, below the button.
-    let (mut tip_node, mut tip_textc, mut tip_vis, tip_size) = tip.into_inner();
+    let (mut tip_node, mut tip_vis, tip_size) = tip.into_inner();
     match hovered.filter(|_| popup.open.is_none()) {
-        Some((e, text, rect)) => {
+        Some((e, (label, key), rect)) => {
             let t = match popup.hover {
                 Some((he, t)) if he == e => t + time.delta_secs(),
                 _ => 0.0,
             };
             popup.hover = Some((e, t));
-            if t > 0.45 && !text.is_empty() {
-                if tip_textc.0 != text {
-                    tip_textc.0 = text;
+            if t > 0.45 && !label.is_empty() {
+                for (mut text, mut node, part) in &mut tip_parts {
+                    let want = if *part == TipPart::Label { &label } else { &key };
+                    if text.0 != *want {
+                        text.0 = want.clone();
+                    }
+                    let display = if want.is_empty() { Display::None } else { Display::Flex };
+                    if node.display != display {
+                        node.display = display;
+                    }
                 }
                 // Centred under the button, using its laid-out width once it has one.
                 let measured = tip_size.size().x * tip_size.inverse_scale_factor();
-                let w = if measured > 0.0 { measured } else { tip_textc.0.chars().count() as f32 * 7.0 + 18.0 };
+                let w = if measured > 0.0 { measured } else { (label.chars().count() + key.chars().count()) as f32 * 7.0 + 30.0 };
                 let left = (rect.center().x - w / 2.0).clamp(6.0, (window.width() - w - 6.0).max(6.0));
                 tip_node.left = px(left);
                 tip_node.top = px(rect.max.y + 11.0);
@@ -451,7 +475,7 @@ pub fn interact(
     }
 }
 
-fn spawn_menu(commands: &mut Commands, fonts: &Fonts, diagram: &Diagram, list: &[Entry], anchor: Rect, window_w: f32) -> Entity {
+fn spawn_menu(commands: &mut Commands, fonts: &Fonts, p: &Palette, diagram: &Diagram, list: &[Entry], anchor: Rect, window_w: f32) -> Entity {
     let width = 250.0;
     let left = anchor.min.x.min(window_w - width - 6.0).max(4.0);
     commands
@@ -467,9 +491,9 @@ fn spawn_menu(commands: &mut Commands, fonts: &Fonts, diagram: &Diagram, list: &
                 border_radius: BorderRadius::all(px(8)),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.085, 0.095, 0.12)),
-            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.12)),
-            BoxShadow::new(Color::srgba(0.0, 0.0, 0.0, 0.45), px(0), px(6), px(0), px(18)),
+            BackgroundColor(p.popup),
+            BorderColor::all(p.popup_edge),
+            BoxShadow::new(p.shadow, px(0), px(6), px(0), px(18)),
             GlobalZIndex(110),
             Interaction::default(),
         ))
@@ -483,7 +507,7 @@ fn spawn_menu(commands: &mut Commands, fonts: &Fonts, diagram: &Diagram, list: &
                                 margin: UiRect::axes(px(6), px(4)),
                                 ..default()
                             },
-                            BackgroundColor(HAIRLINE),
+                            BackgroundColor(p.hairline),
                         ));
                     }
                     Entry::Heading(h) => {
@@ -494,7 +518,7 @@ fn spawn_menu(commands: &mut Commands, fonts: &Fonts, diagram: &Diagram, list: &
                             },
                             Text::new(h.to_uppercase()),
                             ui_font(fonts, 10.5, FontWeight::SEMIBOLD),
-                            TextColor(TEXT.with_alpha(0.45)),
+                            TextColor(p.text.with_alpha(0.45)),
                         ));
                     }
                     Entry::Item { action, checked, enabled } => {
@@ -519,7 +543,7 @@ fn spawn_menu(commands: &mut Commands, fonts: &Fonts, diagram: &Diagram, list: &
                                 },
                                 Text::new(if *checked == Some(true) { "✓" } else { "" }),
                                 ui_font(fonts, 12.5, FontWeight::SEMIBOLD),
-                                TextColor(TEXT.with_alpha(alpha)),
+                                TextColor(p.text.with_alpha(alpha)),
                             ));
                             row.spawn((
                                 Node {
@@ -528,10 +552,10 @@ fn spawn_menu(commands: &mut Commands, fonts: &Fonts, diagram: &Diagram, list: &
                                 },
                                 Text::new(action.label(diagram)),
                                 ui_font(fonts, 13.0, FontWeight::NORMAL),
-                                TextColor(TEXT.with_alpha(alpha)),
+                                TextColor(p.text.with_alpha(alpha)),
                             ));
                             if let Some(s) = action.shortcut() {
-                                row.spawn((Text::new(s), ui_font(fonts, 12.0, FontWeight::NORMAL), TextColor(TEXT.with_alpha(alpha * 0.55))));
+                                row.spawn((Text::new(s), ui_font(fonts, 12.0, FontWeight::NORMAL), TextColor(p.text.with_alpha(alpha * 0.55))));
                             }
                         });
                     }
@@ -556,6 +580,7 @@ pub mod native {
 
     use super::Chrome;
     use crate::actions::{entries, Actions, AppAction, Entry, MenuKind};
+    use crate::palette::Ui;
     use crate::scene::Diagram;
     use crate::story::Playback;
     use crate::theme::Theme;
@@ -565,7 +590,7 @@ pub mod native {
         /// The rebuilt menus, after the app menu.
         menus: Vec<Submenu>,
         ids: HashMap<String, AppAction>,
-        state: Option<(u64, u64, Option<usize>, bool, bool)>,
+        state: Option<(u64, u64, Option<usize>, bool, bool, crate::palette::Appearance)>,
     }
 
     thread_local! {
@@ -616,11 +641,11 @@ pub mod native {
     }
 
     /// Rebuild the menus when what they show changes, and turn menu clicks into actions.
-    pub fn update(_main_thread: NonSendMarker, diagram: Res<Diagram>, theme: Res<Theme>, playback: Res<Playback>, mut actions: ResMut<Actions>) {
+    pub fn update(_main_thread: NonSendMarker, diagram: Res<Diagram>, theme: Res<Theme>, ui: Res<Ui>, playback: Res<Playback>, mut actions: ResMut<Actions>) {
         MENU.with(|m| {
             let mut m = m.borrow_mut();
             let Some(nm) = m.as_mut() else { return };
-            let state = (diagram.version, theme.version, playback.active, diagram.loaded, diagram.path.is_some());
+            let state = (diagram.version, theme.version, playback.active, diagram.loaded, diagram.path.is_some(), ui.choice);
             if nm.state != Some(state) {
                 nm.state = Some(state);
                 for s in nm.menus.drain(..) {
@@ -631,7 +656,7 @@ pub mod native {
                 let _ = window.append_items(&[&PredefinedMenuItem::minimize(None), &PredefinedMenuItem::fullscreen(None)]);
                 for kind in [MenuKind::File, MenuKind::View, MenuKind::Sequences] {
                     let sub = Submenu::new(kind.title(), true);
-                    for (n, e) in entries(kind, &diagram, &theme, &playback, true).into_iter().enumerate() {
+                    for (n, e) in entries(kind, &diagram, &theme, &ui, &playback, true).into_iter().enumerate() {
                         match e {
                             Entry::Separator => {
                                 let _ = sub.append(&PredefinedMenuItem::separator());

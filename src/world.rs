@@ -253,13 +253,28 @@ fn corner_radius(style: Style, scale: f32) -> f32 {
     match style {
         Style::Blocky => 0.3 * scale,
         Style::Blueprint => 3.0 * scale,
+        Style::Dark => 6.0 * scale,
+        Style::City => 1.0 * scale,
         _ => 16.0 * scale,
     }
 }
 
-fn target_height(opened: &HashSet<Id>, id: Id, g: &Geo) -> f32 {
-    let h = if opened.contains(&id) { BLOCK_H + RISE } else { BLOCK_H };
+fn target_height(opened: &HashSet<Id>, id: Id, g: &Geo, tall: f32) -> f32 {
+    let h = if opened.contains(&id) { BLOCK_H + RISE } else { BLOCK_H * tall };
     h * g.scale
+}
+
+/// How many times taller than usual a closed block stands: in the city, things with nothing
+/// inside are towers of assorted heights, and closed containers are wide low blocks.
+fn tallness(style: Style, model: &Model, id: Id) -> f32 {
+    if style != Style::City {
+        return 1.0;
+    }
+    if !model.elements[id].children.is_empty() {
+        return 1.4;
+    }
+    let h = (id as u32).wrapping_mul(2654435761).rotate_left(13) as f32 / u32::MAX as f32;
+    1.9 + 2.4 * h
 }
 
 /// Open the blocks that are big on screen and close the ones that have shrunk away.
@@ -394,7 +409,7 @@ pub fn sync_view(
     let spread = geometry.root_bounds.size().length().max(1.0);
     for &id in &visible {
         let Some(g) = geometry.geos.get(&id).copied() else { continue };
-        let h = target_height(&opened, id, &g);
+        let h = target_height(&opened, id, &g, tallness(theme.style, &diagram.model, id));
         let open_t = if opened.contains(&id) { 1.0 } else { 0.0 };
         match index.0.get(&id).and_then(|e| blocks.get_mut(*e).ok()) {
             Some((_, mut b)) => {
@@ -560,8 +575,13 @@ pub fn animate(
             // White linework (with a hint of the colour) on blueprint blue.
             Style::Blueprint => (
                 lin(Color::srgb(0.95, 0.97, 1.0).mix(&base, 0.18)).truncate(),
-                lin(Style::Blueprint.background().mix(&Color::WHITE, 0.05)),
+                lin(Style::BLUEPRINT_BLOCK),
             ),
+            // The colour as an accent bar on a flat editor-grey panel (both sRGB here; the
+            // shader converts).
+            Style::Dark => (Vec3::from(el.color), Vec4::new(0.145, 0.145, 0.149, 1.0)),
+            // The colour (sRGB) for the facade; the shader builds the rest.
+            Style::City => (Vec3::from(el.color), Vec4::ONE),
         };
         if let Some(m) = mats.get_mut(&b.material) {
             m.u = BlockUniform {

@@ -1,6 +1,7 @@
 //! Visual styles: the neon Tron look, a pen-on-paper sketch, a blocky voxel world of islands
-//! in the sea, and an architect's blueprint. Switch with T, from the toolbar or View menu, or start with
-//! `--style sketch|blocky|blueprint`.
+//! in the sea, an architect's blueprint, a plain dark theme like a code editor's, and a toy
+//! city of buildings joined by roads with cars on them. Switch with T, from the toolbar or
+//! View menu, or start with `--style sketch|blocky|blueprint|dark|city`.
 
 use bevy::{core_pipeline::tonemapping::Tonemapping, post_process::bloom::Bloom, prelude::*};
 
@@ -15,10 +16,12 @@ pub enum Style {
     Sketch,
     Blocky,
     Blueprint,
+    Dark,
+    City,
 }
 
 impl Style {
-    pub const ALL: [Style; 4] = [Style::Tron, Style::Sketch, Style::Blocky, Style::Blueprint];
+    pub const ALL: [Style; 6] = [Style::Tron, Style::Sketch, Style::Blocky, Style::Blueprint, Style::Dark, Style::City];
 
     /// Passed to the shaders.
     pub fn index(self) -> f32 {
@@ -27,6 +30,8 @@ impl Style {
             Style::Sketch => 1.0,
             Style::Blocky => 2.0,
             Style::Blueprint => 3.0,
+            Style::Dark => 4.0,
+            Style::City => 5.0,
         }
     }
 
@@ -36,6 +41,8 @@ impl Style {
             Style::Sketch => "Sketch",
             Style::Blocky => "Blocky",
             Style::Blueprint => "Blueprint",
+            Style::Dark => "Dark",
+            Style::City => "City",
         }
     }
 
@@ -48,7 +55,9 @@ impl Style {
             Style::Tron => Style::Sketch,
             Style::Sketch => Style::Blocky,
             Style::Blocky => Style::Blueprint,
-            Style::Blueprint => Style::Tron,
+            Style::Blueprint => Style::Dark,
+            Style::Dark => Style::City,
+            Style::City => Style::Tron,
         }
     }
 
@@ -57,9 +66,14 @@ impl Style {
             Style::Tron => Color::srgb(0.004, 0.009, 0.018),
             Style::Sketch => Color::srgb(0.95, 0.93, 0.88),
             Style::Blocky => Color::srgb(0.56, 0.74, 1.0),
-            Style::Blueprint => Color::srgb(0.09, 0.27, 0.52),
+            Style::Blueprint => Color::srgb(0.22, 0.44, 0.72),
+            Style::Dark => Color::srgb(0.118, 0.118, 0.118),
+            Style::City => Color::srgb(0.62, 0.78, 0.93),
         }
     }
+
+    /// The blueprint style's blocks: a deep navy, so they stand clear of the lighter paper.
+    pub const BLUEPRINT_BLOCK: Color = Color::srgb(0.07, 0.2, 0.42);
 
     /// Painted text: title, subtitle and body colours.
     pub fn ink(self) -> (Color, Color, Color) {
@@ -79,6 +93,18 @@ impl Style {
                 Color::srgb(0.96, 0.98, 1.0),
                 Color::srgba(0.72, 0.86, 1.0, 0.95),
                 Color::srgba(0.85, 0.92, 1.0, 0.85),
+            ),
+            // Dark lettering on pale rooftops.
+            Style::City => (
+                Color::srgb(0.12, 0.13, 0.15),
+                Color::srgb(0.72, 0.3, 0.06),
+                Color::srgb(0.28, 0.29, 0.32),
+            ),
+            // Editor text, keyword blue, and comment grey.
+            Style::Dark => (
+                Color::srgb(0.9, 0.9, 0.9),
+                Color::srgb(0.34, 0.61, 0.84),
+                Color::srgb(0.62, 0.62, 0.62),
             ),
         }
     }
@@ -106,6 +132,17 @@ impl Style {
                 Color::srgb(0.96, 0.98, 1.0),
                 Vec4::new(0.012, 0.06, 0.23, 0.96),
                 Vec4::new(0.85, 0.92, 1.0, 1.0),
+            ),
+            // Like a green road sign.
+            Style::City => (
+                Color::WHITE,
+                Vec4::new(0.0, 0.2, 0.08, 0.97),
+                Vec4::new(0.9, 0.95, 0.9, 1.0),
+            ),
+            Style::Dark => (
+                Color::srgb(0.8, 0.8, 0.8),
+                Vec4::new(0.0185, 0.0185, 0.0194, 0.97),
+                Vec4::new(0.045, 0.045, 0.045, 1.0),
             ),
         }
     }
@@ -195,6 +232,18 @@ pub fn apply(
                 Style::Blueprint => FloorUniform {
                     color: Vec4::new(0.85, 0.92, 1.0, 1.0),
                     p: Vec4::new(20.0, 5.0, 14000.0, 3.0),
+                    base: lin(style.background()),
+                    ..f.u
+                },
+                Style::City => FloorUniform {
+                    color: lin(style.background()),
+                    p: Vec4::new(6.0, 8.0, 26000.0, 5.0),
+                    base: lin(Color::srgb(0.42, 0.62, 0.3)),
+                    ..f.u
+                },
+                Style::Dark => FloorUniform {
+                    color: lin(Color::srgb(0.2, 0.2, 0.2)),
+                    p: Vec4::new(40.0, 5.0, 14000.0, 4.0),
                     base: lin(style.background()),
                     ..f.u
                 },
